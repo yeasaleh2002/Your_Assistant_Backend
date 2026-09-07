@@ -66,6 +66,7 @@ class MatchedJob(BaseModel):
     description: str = Field(default="", description="Job description snippet")
     job_link: str = Field(..., description="Direct application or job link")
     career_page_link: str = Field(..., description="Predicted or resolved career portal URL")
+    location: str = Field(default="Remote", description="Job location or Remote status")
     match_score: float = Field(
         ...,
         ge=0.0,
@@ -255,6 +256,7 @@ class RAGEngine:
                         description=candidate.description,
                         job_link=candidate.job_link,
                         career_page_link=candidate.career_page_link,
+                        location=getattr(candidate, "location", "Remote") or "Remote",
                         match_score=score_pct,
                     )
                 )

@@ -87,6 +87,8 @@ def run_daily_job_search_pipeline(job_keyword: Optional[str] = None) -> Dict[str
                 career_page_link=m.career_page_link,
                 match_score=m.match_score,
                 recruiter_email=None,
+                description=m.description,
+                location=getattr(m, "location", "Remote") or "Remote",
             )
             db.add(db_entry)
             saved_count += 1
@@ -265,7 +267,11 @@ async def generate_resume_for_job(
         )
 
     builder = ResumeBuilder()
-    job_desc = f"Opportunity: {job.title} at {job.company}. Job Link: {job.job_link}"
+    job_desc = (
+        job.description
+        if job.description and len(job.description.strip()) > 15
+        else f"Opportunity: {job.title} at {job.company}. Job Link: {job.job_link}"
+    )
 
     try:
         result = builder.build_tailored_resume_pdf(
@@ -314,7 +320,11 @@ async def generate_email_for_job(
         )
 
     generator = EmailGenerator()
-    job_desc = f"{job.title} at {job.company}. Job Link: {job.job_link}"
+    job_desc = (
+        job.description
+        if job.description and len(job.description.strip()) > 15
+        else f"{job.title} at {job.company}. Job Link: {job.job_link}"
+    )
 
     try:
         draft = generator.generate_cold_email(
@@ -342,6 +352,84 @@ async def generate_email_for_job(
 # Modular API Endpoints (Programmatic & Testing Sub-Routes)
 # ==============================================================================
 
+
+
+@app.post(
+    "/api/jobs/live-search",
+    response_model=List[JobHistoryResponse],
+    tags=["Job Search"],
+)
+@limiter.limit("20/minute")
+async def live_search_and_match(
+    request: Request,
+    keyword: Optional[str] = Query(None, description="Job title, skill or keyword (e.g. Next.js, Frontend, Python)"),
+    limit: int = Query(15, ge=1, le=50, description="Max jobs to scrape and evaluate"),
+    min_score: float = Query(45.0, ge=0.0, le=100.0, description="Minimum match cutoff percentage"),
+    db: Session = Depends(get_db),
+):
+    """
+    Dynamic Live Job Radar:
+    1. Scrapes real-world positions from SerpApi Google Jobs.
+    2. Runs vector semantic comparison against the user's active resume (ChromaDB + FastEmbed).
+    3. Persists qualified opportunities into SQLite.
+    4. Returns real-time ranked openings.
+    """
+    scraper = JobScraper()
+    rag = RAGEngine()
+
+    search_kw = keyword.strip() if keyword and keyword.strip() else None
+    logger.info("Executing on-demand live job search with keyword: %s", search_kw)
+
+    scraped_candidates = scraper.scrape_jobs(job_keyword=search_kw, limit=limit, db=db)
+    logger.info("Live search scraped %d candidate jobs", len(scraped_candidates))
+
+    if not scraped_candidates:
+        # Fallback to existing saved jobs matching query
+        query = db.query(JobHistory)
+        if search_kw:
+            kw = f"%{search_kw}%"
+            query = query.filter(or_(JobHistory.title.ilike(kw), JobHistory.company.ilike(kw)))
+        return query.order_by(JobHistory.match_score.desc()).limit(limit).all()
+
+    matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=min_score)
+    logger.info("Vector RAG matched %d jobs exceeding %0.1f%% threshold", len(matched_jobs), min_score)
+
+    results = []
+    for m in matched_jobs:
+        existing_job = db.query(JobHistory).filter(JobHistory.job_link == m.job_link).first()
+        if not existing_job:
+            loc = getattr(m, "location", None) or "Remote"
+            desc_l = (m.description or "").lower()
+            if loc == "Remote":
+                if "hybrid" in desc_l:
+                    loc = "Hybrid"
+                elif "on-site" in desc_l or "onsite" in desc_l:
+                    loc = "On-site"
+
+            new_job = JobHistory(
+                title=m.title,
+                company=m.company,
+                job_link=m.job_link,
+                career_page_link=m.career_page_link,
+                match_score=m.match_score,
+                description=m.description,
+                location=loc,
+                recruiter_email=None,
+            )
+            db.add(new_job)
+            db.commit()
+            db.refresh(new_job)
+            results.append(new_job)
+        else:
+            existing_job.match_score = m.match_score
+            if m.description and not existing_job.description:
+                existing_job.description = m.description
+            db.commit()
+            results.append(existing_job)
+
+    results.sort(key=lambda x: x.match_score, reverse=True)
+    return results
+
 @app.post(
     "/api/jobs",
     response_model=JobHistoryResponse,
@@ -362,6 +450,8 @@ async def create_job_history(
         career_page_link=str(job_in.career_page_link) if job_in.career_page_link else None,
         match_score=job_in.match_score,
         recruiter_email=str(job_in.recruiter_email) if job_in.recruiter_email else None,
+        description=job_in.description,
+        location=job_in.location or "Remote",
     )
     db.add(db_job)
     db.commit()

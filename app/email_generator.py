@@ -46,6 +46,80 @@ class EmailDraft(BaseModel):
     )
 
 
+WORLD_CLASS_EMAIL_WRITER_PROMPT = """You are a World-Class Job Application Email Writer, Professional Recruiter Communication Specialist, and Hiring Communication Expert.
+
+Your job is to generate concise, personalized, professional, and high-converting job application emails based on the candidate's resume, the target job description, and the company information.
+
+Your goal is to make the email relevant enough that a recruiter immediately understands:
+* Who the candidate is
+* What role they are applying for
+* Why they are relevant
+* What makes them a strong candidate
+* What action the recruiter should take next
+
+### 1. PERSONALIZATION
+Never generate a generic email when a job description is available.
+Analyze: Job title, Company name, Required skills, Preferred skills, Responsibilities, Experience requirements, Industry/domain, Important keywords.
+Then personalize the email around the candidate's actual experience.
+You MUST ONLY reference real skills and experiences present in the candidate's resume. DO NOT fabricate or hallucinate any skills, metrics, or experiences.
+
+### 2. SUBJECT LINE
+Generate a concise and professional subject line.
+Prefer formats such as:
+Application for [Job Title] — [Candidate Name]
+or
+Application — [Job Title] | [Candidate Name]
+When appropriate, create a more compelling but still professional subject line based on the candidate's strongest relevant qualification.
+Avoid: Clickbait, Excessive capitalization, Emojis, Generic subjects such as "Job Application".
+
+### 3. EMAIL STRUCTURE
+Keep the email concise and recruiter-friendly.
+Recommended structure:
+1. Professional greeting
+2. Clear statement of the position being applied for
+3. Short introduction of the candidate
+4. 2–3 highly relevant qualifications or achievements
+5. Why the candidate is relevant to the specific role/company
+6. Mention attached resume when applicable
+7. Clear call to action (e.g. "I'd welcome the opportunity to discuss how my experience could contribute to your team.")
+8. Professional closing
+
+The default email should generally be around 120–200 words.
+
+### 4. IMPACT
+Prioritize achievements over generic responsibilities.
+Use measurable achievements when the candidate has provided legitimate metrics. Never invent metrics.
+If metrics are unavailable, use strong qualitative impact.
+
+### 5. KEYWORD RELEVANCE
+Naturally incorporate important keywords from the job description when the candidate genuinely possesses those skills.
+Do NOT keyword-stuff the email. The email should sound naturally written by a professional candidate, not generated for an ATS.
+
+### 6. GRAMMAR & LANGUAGE
+Check grammar, spelling, sentence structure, punctuation, professional tone, clarity, and conciseness.
+Remove unnecessary phrases and filler. Avoid overly complicated vocabulary.
+
+### 7. REPETITION
+Detect and remove repeated skills, technologies, achievements, and phrases.
+
+### 8. TONE
+Default tone: Professional + Confident + Concise + Natural.
+Do not sound desperate, arrogant, robotic, overly formal, generic, or AI-generated.
+Avoid phrases such as:
+"I am writing to express my keen interest..."
+"I believe I would be a perfect fit..."
+"I am extremely passionate..."
+"Please find my attached resume for your kind consideration..."
+Prefer natural professional language.
+
+### 9. CALL TO ACTION
+End with a natural, polite CTA.
+
+### 10. FINAL QUALITY CHECK & OUTPUT FORMAT
+Return ONLY a valid JSON object with keys: 'email', 'subject', 'body'.
+"""
+
+
 def extract_recruiter_email(text: str) -> str:
     """
     Extract a recruiter or hiring contact email from the job description using regex.
@@ -91,8 +165,7 @@ class EmailGenerator:
         Generate a tailored cold email for a specific job posting.
         
         1. Resolves recruiter email (provided -> regex extracted -> [Recruiter Email]).
-        2. Prompts LLM to write an engaging subject line and concise body emphasizing
-           real skills from the user's resume matching the role.
+        2. Prompts LLM using World-Class Job Application Email Writer instructions.
         3. Returns JSON dict: {"email": "...", "subject": "...", "body": "..."}.
         """
         resume_content = base_resume_text or self.load_base_resume()
@@ -102,18 +175,7 @@ class EmailGenerator:
         company_name = company or "the team"
 
         # Step 2: Formulate AI Prompt
-        system_prompt = (
-            "You are an elite career strategist and executive talent partner. "
-            "Write a highly engaging, concise, and persuasive cold outreach email from the candidate "
-            "to the recruiter or hiring manager. "
-            "CRITICAL RULES:\n"
-            "1. You MUST ONLY reference real skills, metrics, and experiences present in the candidate's resume. "
-            "DO NOT fabricate or hallucinate any skills or experiences.\n"
-            "2. Highlight the 2-3 most compelling skill overlaps with the target job requirements.\n"
-            "3. Keep the email punchy, professional, and under 175 words.\n"
-            "4. Include an engaging, high-open-rate subject line.\n"
-            "5. You MUST return ONLY a valid JSON object with keys: 'email', 'subject', 'body'."
-        )
+        system_prompt = WORLD_CLASS_EMAIL_WRITER_PROMPT
 
         user_prompt = f"""
 TARGET ROLE:
@@ -126,11 +188,18 @@ TARGET ROLE:
 CANDIDATE BASE RESUME:
 {resume_content}
 
+CRITICAL RULES:
+1. Candidate Name: Extract the candidate's name from the resume (e.g. Yeasaleh).
+2. Professional Subject Line: Prefer format like 'Application for {job_title} — Yeasaleh' or highlight a top relevant qualification.
+3. Word Count: Keep between 120 and 200 words.
+4. Tone: Professional + Confident + Concise + Natural. Avoid clichés.
+5. Truthfulness: Strictly highlight real qualifications and achievements from the resume without fabricating metrics.
+
 OUTPUT FORMAT:
 Return ONLY a valid JSON object formatted exactly as:
 {{
   "email": "{resolved_email}",
-  "subject": "<engaging, tailored subject line>",
+  "subject": "<engaging, professional subject line>",
   "body": "<concise, personalized email body with greeting, tailored value proposition, call-to-action, and candidate sign-off>"
 }}
 """

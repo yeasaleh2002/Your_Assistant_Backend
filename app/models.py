@@ -24,6 +24,8 @@ class JobHistory(Base):
     career_page_link = Column(Text, nullable=True)
     match_score = Column(Float, nullable=False)
     recruiter_email = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    location = Column(String(255), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -77,6 +79,8 @@ class JobHistoryBase(BaseModel):
         description="Match score calculated by AI (between 0.0 and 100.0)",
         examples=[94.5],
     )
+    description: Optional[str] = Field(default=None, description="Job description")
+    location: Optional[str] = Field(default=None, description="Job location")
     recruiter_email: Optional[EmailStr] = Field(
         default=None,
         description="Optional verified recruiter contact email",
@@ -108,4 +112,6 @@ class JobHistoryResponse(BaseModel):
     career_page_link: Optional[str] = None
     match_score: float
     recruiter_email: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
     created_at: datetime

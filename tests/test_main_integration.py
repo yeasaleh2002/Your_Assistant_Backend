@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from app.database import Base, SessionLocal, engine
 from app.main import app, run_daily_job_search_pipeline
 from app.models import JobHistory
+from app.rag_engine import MatchedJob
 from app.scraper import ScrapedJob
 
 client = TestClient(app)
@@ -159,7 +160,19 @@ def test_run_daily_job_search_pipeline():
         )
     ]
 
-    with patch("app.scraper.JobScraper.scrape_jobs", return_value=mock_scraped):
+    mock_matched = [
+        MatchedJob(
+            title="Senior Python Backend Engineer",
+            company="DeepMind",
+            description="High throughput FastAPI and ChromaDB vector systems.",
+            job_link="https://deepmind.example/jobs/1",
+            career_page_link="https://deepmind.example/careers",
+            match_score=82.5,
+        )
+    ]
+
+    with patch("app.scraper.JobScraper.scrape_jobs", return_value=mock_scraped), \
+         patch("app.rag_engine.RAGEngine.match_jobs", return_value=mock_matched):
         stats = run_daily_job_search_pipeline(job_keyword="Python")
         assert stats["scraped"] == 1
         assert stats["saved"] == 1

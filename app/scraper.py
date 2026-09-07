@@ -41,6 +41,52 @@ class ScrapedJob(BaseModel):
     description: str = Field(default="", description="Job description or snippet")
     job_link: str = Field(..., description="Direct job application or post link")
     career_page_link: str = Field(..., description="Predicted or resolved company career portal URL")
+    location: str = Field(default="Remote", description="Job location or Remote status")
+
+
+def is_location_eligible(item: Dict[str, Any]) -> bool:
+    """
+    Filter jobs according to candidate location preferences:
+    - Bangladesh (BD): Any job type allowed (On-site, Hybrid, Remote).
+    - Outside Bangladesh: ONLY Remote / Work From Home jobs allowed.
+    """
+    loc_str = str(item.get("location") or "").lower()
+    desc_str = str(item.get("description") or "").lower()
+    title_str = str(item.get("title") or "").lower()
+    detected_ext = item.get("detected_extensions") or {}
+    extensions = [str(x).lower() for x in (item.get("extensions") or [])]
+
+    # 1. Check if job is in Bangladesh
+    bd_keywords = [
+        "bangladesh", "dhaka", "chittagong", "sylhet", "rajshahi",
+        "khulna", "barishal", "rangpur", "gazipur", "narayanganj",
+        "uttara", "gulshan", "banani", "mirpur", "dhanmondi", "bd"
+    ]
+    if any(k in loc_str for k in bd_keywords):
+        return True  # Any type allowed for BD
+
+    # 2. If no location metadata was provided at all (e.g. in test fixtures)
+    if not loc_str and not detected_ext and not extensions:
+        return True
+
+    # 3. Outside Bangladesh: MUST be Remote
+    if detected_ext.get("work_from_home") is True:
+        return True
+
+    if any("work from home" in ext or "remote" in ext for ext in extensions):
+        return True
+
+    if any(rem in loc_str for rem in ["remote", "anywhere", "work from home", "telecommute", "wfh", "home-based"]):
+        return True
+
+    if any(rem in title_str for rem in ["remote", "wfh", "work from home", "anywhere"]):
+        return True
+
+    if "work from home" in desc_str[:600] or "100% remote" in desc_str[:600] or "remote role" in desc_str[:600] or "remote position" in desc_str[:600]:
+        return True
+
+    # Job is outside Bangladesh and not remote -> Exclude!
+    return False
 
 
 def predict_career_page_url(company: str, job_link: Optional[str] = None) -> str:
@@ -188,6 +234,16 @@ class JobScraper:
         # Parse candidates
         candidates: List[ScrapedJob] = []
         for item in raw_jobs:
+            # Filter according to user preference: BD any type, outside BD remote only
+            if not is_location_eligible(item):
+                logger.info(
+                    "Skipping job '%s' at '%s' (location '%s' is outside BD and not remote).",
+                    item.get("title"),
+                    item.get("company_name"),
+                    item.get("location"),
+                )
+                continue
+
             title = (item.get("title") or "").strip()
             company = (item.get("company_name") or "Unknown Company").strip()
             description = (item.get("description") or "").strip()
@@ -197,6 +253,7 @@ class JobScraper:
                 continue
 
             career_link = predict_career_page_url(company=company, job_link=link)
+            loc = (item.get("location") or "Remote").strip()
 
             candidates.append(
                 ScrapedJob(
@@ -205,6 +262,7 @@ class JobScraper:
                     description=description,
                     job_link=link,
                     career_page_link=career_link,
+                    location=loc,
                 )
             )
 

@@ -1,30 +1,54 @@
-ALEX RIVERA
-Senior Python & AI Platform Engineer | Full-Stack ML Systems
-Email: alex.rivera@example.com | GitHub: github.com/alexrivera-ai | Location: San Francisco, CA (Open to Remote)
+Yeasaleh | Software Developer  
+Dhaka, Bangladesh | +8801735782467 | yeasaleh.contact@gmail.com  
+https://www.linkedin.com/in/yea-saleh | https://github.com/yeasaleh2002 | https://yeasaleh.xyz
 
-PROFESSIONAL SUMMARY
-Results-driven Senior Python Engineer with 7+ years of experience architecting high-throughput backend services, autonomous AI agents, and RAG (Retrieval-Augmented Generation) pipelines. Expert in Python, FastAPI, SQLAlchemy, ChromaDB, vector embeddings, asynchronous distributed workflows, and cloud-native microservices. Passionate about automating intelligent job discovery and scaling low-latency ML applications.
+Professional Summary 
+Software Developer specializing in architecting scalable web applications using Next.js, Node.js, and TypeScript. Experienced in designing robust REST and GraphQL APIs, maintaining system architecture, managing relational databases, and building high-performance user interfaces. Adept at developing custom Node.js packages, integrating artificial intelligence tools, and streamlining cross-platform workflows through targeted automations.  
 
-CORE TECHNICAL SKILLS
-- Programming & Frameworks: Python, FastAPI, Starlette, Pydantic, asyncio, Flask, TypeScript, Node.js
-- AI, ML & Vector Search: ChromaDB, LangChain, LlamaIndex, OpenAI API, HuggingFace Transformers, Sentence-Transformers, all-MiniLM-L6-v2, ONNX, Embeddings, Cosine Similarity, RAG pipelines
-- Data & Storage: PostgreSQL, SQLite, SQLAlchemy ORM, Redis, Vector Databases, Alembic
-- Web Scraping & Ingestion: SerpApi, BeautifulSoup, Scrapy, Playwright, HTTPX, rate limiting, anti-bot mitigation
-- DevOps & Cloud: Docker, Kubernetes, AWS (ECS, S3, RDS), GitHub Actions, CI/CD, Linux, Prometheus
+Technical Skills
+Front-End: JavaScript, TypeScript, React.js, Next.js, Redux Toolkit, Zustand, Tailwind CSS, Vitest, Framer 
+                    Motion, GSAP, React Spring, Lottie-web, Mixpanel
+Back-End:  Node.js, Express.js, Python, FastAPI, SQL, Postgres, Prisma, MySQL, REST API, AWS,  
+                    GraphQL, Supabase
+AI & Automation Tools: Firebase, Vite, Webpack, Babel, JWT, Jenkins, Jira, Trello, Bitbucket, Zoho Desk, 
+                                           MailerLite, Stripe, LemonSqueezy, Paytm, WeWeb, Make.com, Zapier, GitHub Copilot, 
+                                           Bolt.new, Antigrative, Google AI Studio, Claude, Firecrawl
 
-PROFESSIONAL EXPERIENCE
+Professional Experience
 
-Senior AI Systems Engineer | HiveTech Solutions | 2022 - Present
-- Architected and deployed an automated LLM candidate matching and job ingestion pipeline using FastAPI, ChromaDB, and Python, decreasing manual sourcing time by 80%.
-- Implemented real-time vector search using cosine similarity over thousands of job descriptions with sub-50ms latency.
-- Enforced strict API security, IP rate limiting (SlowAPI), and payload validation schemas preventing injection attacks across public ingestion endpoints.
-- Designed automated self-cleaning retention policies and cron schedulers (APScheduler) maintaining a lean vector index and SQLite/PostgreSQL databases.
+Nurix Hive | Software Engineer               
+Dhaka, Bangladesh (Remote) | August 2025 – Present
+Architected backend systems and maintained architecture by developing reusable Node.js packages and custom AI integrations to automate data workflows. 
+Established secure server infrastructure using Node.js and Express, leveraging Supabase for data hydration and accelerating API response times by 25%.   
+Built fluid front-end interfaces with React.js, Next.js, and TypeScript, deploying custom screen-scaling utilities for 4K/HD displays to eliminate layout shifts.     
+Programmed high-performance, 60fps animations with GSAP and Framer Motion, refactoring motion logic into modular hooks to prevent scroll jitter. 
+Automated cross-platform operations via Make.com, WeWeb, and Zapier webhooks, reducing manual data workloads by 40% while synchronizing CRM interactions.   
 
-Senior Backend Engineer | Apex Cloud Innovations | 2019 - 2022
-- Led a team of 5 backend engineers developing distributed microservices in Python and FastAPI handling 15M+ requests daily.
-- Built high-speed asynchronous data scrapers and crawler workers extracting and deduplicating records across hundreds of domains.
-- Integrated relational databases (PostgreSQL/SQLAlchemy) with Redis caching layers, cutting query latency by 45%.
+Manaknight Digital – Web Developer                  
+Toronto, Canada (Remote) | December 2023 – July 2025
+Spearheaded full-stack feature development for enterprise React.js applications, building modular component libraries that reduced new feature deployment time by 30%.    
+Designed RESTful services and secure JWT authentication systems using Node.js and MySQL to support multi-role, access-controlled platforms.    
+Constructed the end-to-end payment layer for complex billing systems, managing Stripe and LemonSqueezy events alongside resilient subscription error handling.     
+Enhanced Core Web Vitals and data pipeline efficiency via code splitting, lazy loading, and database query refinement, drastically decreasing initial load times.   
 
-EDUCATION & CERTIFICATIONS
-- B.S. in Computer Science | University of California, Berkeley
-- AWS Certified Solutions Architect – Associate
+MedLink Healthcare Private Limited – Software Engineer
+Hyderabad, India (Remote) | March 2022 – December 2023
+Optimized data fetching layers by building AWS AppSync GraphQL APIs, improving server-to-client response times, and driving a 35% increase in user retention.   
+Delivered dynamic SaaS capabilities, including real-time data visualizations and drag-and-drop interfaces, increasing overall user satisfaction by 20%.   
+Built a robust internationalization framework for production healthcare apps, ensuring high-performance rendering across multiple global languages.    
+Coordinated AWS deployment pipelines and connected Zoho Desk APIs to internal systems, cutting support ticket resolution time by 15%. 
+
+Mentorship Experience
+
+Sadhinota Camp – Support Mentor (Voluntary)
+Dhaka, Bangladesh | September 2024 – April 2025
+Mentored students in full-stack architecture, improving student code quality by 40% through personalized code reviews and guidance. 
+Formulated practical learning resources focused on frontend performance and error handling, enabling learners to reduce runtime errors by 30%.
+Education
+
+            
+B.Sc. in Computer  Science & Engineering (2023 - Present)
+City University, Bangladesh
+
+Language     
+Bangla(Native), English(Professional Working Proficiency)
