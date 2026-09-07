@@ -17,11 +17,13 @@ from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.database import Base, delete_records_older_than, engine, get_db
+from app.email_generator import EmailDraft, EmailGenerator
 from app.llm_manager import AllProvidersExhaustedError, generate_ai_response
 from app.models import JobHistory, JobHistoryCreate, JobHistoryResponse
 from app.rag_engine import MatchedJob, RAGEngine
 from app.resume_builder import ResumeBuilder
 from app.scraper import JobScraper, ScrapedJob
+
 
 
 # Setup structured logging
@@ -358,6 +360,46 @@ async def generate_resume_pdf_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate PDF: {exc}",
         )
+
+
+class GenerateEmailRequest(BaseModel):
+    job_title: str = Field(..., min_length=2, max_length=255, description="Target job title")
+    job_description: str = Field(..., min_length=10, max_length=20000, description="Job description text")
+    company: Optional[str] = Field(default=None, max_length=255, description="Target company name")
+    recruiter_email: Optional[str] = Field(default=None, description="Optional explicit recruiter email")
+    base_resume_text: Optional[str] = Field(default=None, description="Optional custom base resume text")
+
+
+@app.post(
+    "/api/email/generate",
+    response_model=EmailDraft,
+    tags=["Cold Email Generator"],
+)
+@limiter.limit("15/minute")
+async def generate_email_endpoint(
+    request: Request,
+    payload: GenerateEmailRequest,
+):
+    """
+    Extract recruiter contact information and generate a high-impact cold outreach email
+    emphasizing matched skills from the user's real resume.
+    """
+    generator = EmailGenerator()
+    try:
+        draft_dict = generator.generate_cold_email(
+            job_title=payload.job_title,
+            job_description=payload.job_description,
+            company=payload.company,
+            recruiter_email=payload.recruiter_email,
+            base_resume_text=payload.base_resume_text,
+        )
+        return draft_dict
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate cold email: {exc}",
+        )
+
 
 
 

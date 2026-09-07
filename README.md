@@ -25,6 +25,7 @@ A production-ready FastAPI backend for an Automated AI Job Search tool built wit
 │   ├── rag_engine.py     # Local ChromaDB vector engine, FastEmbed model, >75% cosine filter
 │   ├── llm_manager.py    # Multi-key rotation, Claude 3 -> Gemini 1.5 fallback engine
 │   ├── resume_builder.py # ATS resume tailoring (anti-hallucination prompt) & ReportLab PDF
+│   ├── email_generator.py# Recruiter email extraction (regex/fallback) & cold email generation
 │   └── main.py           # FastAPI app, SlowAPI limiter, APScheduler, API routes
 ├── data/
 │   └── resume.txt        # User base resume profile for vector matching
@@ -33,7 +34,8 @@ A production-ready FastAPI backend for an Automated AI Job Search tool built wit
 │   ├── test_scraper.py   # Test suite for queries, career prediction, and deduplication
 │   ├── test_rag_engine.py# Test suite for ChromaDB, embeddings, and >75% match threshold
 │   ├── test_llm_manager.py # Test suite for multi-key rotation and multi-tier LLM fallback
-│   └── test_resume_builder.py # Test suite for ATS prompt constraint and PDF generation
+│   ├── test_resume_builder.py # Test suite for ATS prompt constraint and PDF generation
+│   └── test_email_generator.py# Test suite for recruiter email extraction and JSON schema
 ├── .env.example          # Environment variables template (Claude & Gemini multi-keys)
 ├── requirements.txt      # Project dependencies
 └── README.md
@@ -89,7 +91,9 @@ Interactive API documentation will be available at:
 | `POST` | `/api/ai/generate` | Generate AI text via Claude 3 (Key 1 -> 2) -> Gemini 1.5 (Key 1 -> 2) | 15/min |
 | `POST` | `/api/resume/tailor` | Tailor resume for matched job with 100% ATS & zero-hallucination constraint | 10/min |
 | `POST` | `/api/resume/generate-pdf` | Convert tailored resume into an ATS-friendly PDF download | 10/min |
+| `POST` | `/api/email/generate` | Extract recruiter email and generate personalized cold email JSON | 15/min |
 | `POST` | `/api/jobs/cleanup` | Manually run retention pruning (default: 7 days) | 5/min |
+
 
 
 
