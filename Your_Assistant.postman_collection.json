@@ -1,0 +1,348 @@
+{
+  "info": {
+    "_postman_id": "9d8a34b2-2b62-4217-b714-e53f090b8fbc",
+    "name": "Your Assistant — AI Job Search Platform",
+    "description": "Comprehensive Postman collection for testing all endpoints in the 'Your Assistant' AI job search and automation backend.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "01 - Health & System",
+      "item": [
+        {
+          "name": "Health Check & Easter Egg",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": ["{{baseUrl}}"],
+              "path": [""]
+            },
+            "description": "Verifies service health and returns the Antigravity active easter egg."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - Core Discovery & Workflows",
+      "item": [
+        {
+          "name": "List & Search Jobs (Keyword + Score Filter)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/jobs?job_keyword=Engineer&min_score=75&skip=0&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["jobs"],
+              "query": [
+                {
+                  "key": "job_keyword",
+                  "value": "Engineer",
+                  "description": "Optional search term for title or company"
+                },
+                {
+                  "key": "min_score",
+                  "value": "75",
+                  "description": "Minimum match score threshold"
+                },
+                {
+                  "key": "skip",
+                  "value": "0",
+                  "description": "Pagination offset"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Items per page"
+                }
+              ]
+            },
+            "description": "Retrieve stored jobs ranked by match score with keyword filtering."
+          },
+          "response": []
+        },
+        {
+          "name": "Generate Tailored Resume & PDF by Job ID",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/generate-resume/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["generate-resume", "1"]
+            },
+            "description": "Builds tailored Markdown resume and ReportLab PDF for the specified job record ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Generate Cold Email Outreach by Job ID",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/generate-email/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["generate-email", "1"]
+            },
+            "description": "Generates engaging subject line and cold outreach email for the specified job record ID."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 - Job Database Operations",
+      "item": [
+        {
+          "name": "Create Job Record Manually",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Senior AI Systems Engineer\",\n  \"company\": \"Anthropic\",\n  \"job_link\": \"https://boards.greenhouse.io/anthropic/jobs/456789\",\n  \"career_page_link\": \"https://anthropic.com/careers\",\n  \"match_score\": 91.5,\n  \"recruiter_email\": \"careers@anthropic.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs"]
+            },
+            "description": "Manually inserts a new job record with strict Pydantic input validation."
+          },
+          "response": []
+        },
+        {
+          "name": "Query Stored Jobs (Pagination & Filter)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs?skip=0&limit=25&min_score=80&company=Anthropic",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs"],
+              "query": [
+                {
+                  "key": "skip",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "25"
+                },
+                {
+                  "key": "min_score",
+                  "value": "80"
+                },
+                {
+                  "key": "company",
+                  "value": "Anthropic"
+                }
+              ]
+            },
+            "description": "Paginated list of saved jobs with company and score filtering."
+          },
+          "response": []
+        },
+        {
+          "name": "Trigger 7-Day Retention Cleanup",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs/cleanup?retention_days=7",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs", "cleanup"],
+              "query": [
+                {
+                  "key": "retention_days",
+                  "value": "7",
+                  "description": "Number of days threshold to purge"
+                }
+              ]
+            },
+            "description": "Purges job records older than the specified retention days."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 - Scraper & Vector RAG Engine",
+      "item": [
+        {
+          "name": "Trigger On-Demand SerpApi Scrape",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs/scrape?keyword=AI%20Engineer&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs", "scrape"],
+              "query": [
+                {
+                  "key": "keyword",
+                  "value": "AI Engineer",
+                  "description": "Job title or keyword"
+                },
+                {
+                  "key": "limit",
+                  "value": "5",
+                  "description": "Max results to fetch"
+                }
+              ]
+            },
+            "description": "Scrapes Google Jobs via SerpApi and excludes links saved within the last 7 days."
+          },
+          "response": []
+        },
+        {
+          "name": "Match Scraped Candidates via Vector RAG (>75% Filter)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"title\": \"Senior Python AI Engineer\",\n    \"company\": \"Scale AI\",\n    \"description\": \"Seeking a senior backend engineer proficient with FastAPI, ChromaDB, vector search, and LLM orchestration.\",\n    \"job_link\": \"https://scale.com/careers/python-ai-1\",\n    \"career_page_link\": \"https://scale.com/careers\"\n  },\n  {\n    \"title\": \"Senior Marketing Specialist\",\n    \"company\": \"Acme Corp\",\n    \"description\": \"Run SEO campaigns and social media management for B2B brand presence.\",\n    \"job_link\": \"https://acme.com/jobs/marketing-9\",\n    \"career_page_link\": \"https://acme.com/careers\"\n  }\n]"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs/match?min_score=75",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs", "match"],
+              "query": [
+                {
+                  "key": "min_score",
+                  "value": "75"
+                }
+              ]
+            },
+            "description": "Embeds candidates using local FastEmbed model and returns only jobs with cosine score > 75%."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 - AI & ATS Resume Builder",
+      "item": [
+        {
+          "name": "Direct AI Text Generation (Claude 3 -> Gemini 1.5 Fallback)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prompt\": \"Explain how a 24-hour autonomous background scheduler helps job seekers in two concise sentences.\",\n  \"system_prompt\": \"You are a technical career assistant.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/generate",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "generate"]
+            },
+            "description": "Multi-tier LLM generation with key rotation and cascading fallback."
+          },
+          "response": []
+        },
+        {
+          "name": "Tailor Resume Markdown (Zero-Hallucination)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_title\": \"Lead Platform Engineer\",\n  \"job_description\": \"Build resilient distributed data pipelines with Python, PostgreSQL, and FastAPI.\",\n  \"company\": \"Cohere\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/resume/tailor",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "resume", "tailor"]
+            },
+            "description": "Tailors candidate resume for a target job while strictly preventing skill hallucination."
+          },
+          "response": []
+        },
+        {
+          "name": "Compile Markdown to ATS-Friendly PDF Download",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"markdown_text\": \"# Alex Rivera\\n**Senior AI Systems Engineer** | alex.rivera@example.com\\n\\n## PROFESSIONAL SUMMARY\\nAccomplished backend engineer with expertise in FastAPI, ChromaDB, and multi-tier LLM architectures.\\n\\n## CORE COMPETENCIES\\n- Python, FastAPI, SQLite, ChromaDB\\n- FastEmbed, Vector RAG, ReportLab\\n\\n## PROFESSIONAL EXPERIENCE\\n### Senior Backend Engineer | Tech Innovations (2022 - Present)\\n- Architected high-performance FastAPI backends with strict SlowAPI rate limiting.\\n- Built local vector search pipelines using ChromaDB and FastEmbed embeddings.\",\n  \"filename\": \"alex_rivera_resume.pdf\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/resume/generate-pdf",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "resume", "generate-pdf"]
+            },
+            "description": "Renders tailored Markdown into a downloadable ATS-optimized PDF using ReportLab."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "06 - Cold Outreach & Email",
+      "item": [
+        {
+          "name": "Generate Cold Outreach Email (Custom Job)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_title\": \"Staff AI Engineer\",\n  \"job_description\": \"We are hiring a Staff AI Engineer to build enterprise RAG pipelines. Inquiries can be sent to tech-talent@openai.com.\",\n  \"company\": \"OpenAI\",\n  \"recruiter_email\": null\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/email/generate",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "email", "generate"]
+            },
+            "description": "Extracts recruiter contact information from description and returns structured cold email JSON."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
