@@ -58,6 +58,12 @@ class UserProfile(BaseModel):
 
 def get_admin_credentials() -> Dict[str, str]:
     """Retrieve authorized admin credentials from environment."""
+    try:
+        from dotenv import load_dotenv
+        env_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+        load_dotenv(dotenv_path=env_file, override=True)
+    except Exception:
+        pass
     return {
         "email": os.getenv("ADMIN_EMAIL", "").strip().lower(),
         "password": os.getenv("ADMIN_PASSWORD", "").strip(),
