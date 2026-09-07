@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
@@ -153,7 +153,7 @@ class RAGEngine:
 
     def match_jobs(
         self,
-        jobs: List[Union[ScrapedJob, Dict[str, Any]]],
+        jobs: Sequence[Union[ScrapedJob, Dict[str, Any]]],
         min_match_score: float = MIN_MATCH_THRESHOLD,
     ) -> List[MatchedJob]:
         """

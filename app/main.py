@@ -515,7 +515,8 @@ async def generate_resume_pdf_endpoint(
 ):
     """Convert tailored Markdown resume into a high-quality, ATS-optimized PDF and return it for download."""
     builder = ResumeBuilder()
-    safe_name = payload.filename if payload.filename.endswith(".pdf") else f"{payload.filename}.pdf"
+    raw_name = payload.filename or "tailored_resume.pdf"
+    safe_name = raw_name if raw_name.endswith(".pdf") else f"{raw_name}.pdf"
     pdf_path = Path("output") / safe_name
     try:
         generated_file = builder.generate_pdf(payload.markdown_text, pdf_path)
