@@ -55,6 +55,8 @@ AGGREGATOR_DOMAINS = {
     "remote.co",
     "bdjobs.com",
     "toptal.com",
+    "workable.com",
+    "micro1.ai",
 }
 
 # Exclusion lists for India and Pakistan
@@ -156,31 +158,53 @@ def is_india_or_pakistan(item: Dict[str, Any]) -> bool:
     return False
 
 
-def is_last_24_hours(item: Dict[str, Any]) -> bool:
+DEFAULT_SEARCH_HOURS = int(os.getenv("JOB_SEARCH_HOURS", "96"))
+
+
+def is_recent_posting(item: Dict[str, Any], max_hours: Optional[int] = None) -> bool:
     """
-    Strictly verify if the job was posted within the last 24 hours.
+    Verify if the job was posted within the allowed recency window.
+    Default: 96 hours (4 days) for testing, or 24 hours as configured.
     Inspects SerpApi extensions, detected_extensions, and timestamps.
     """
+    if max_hours is None:
+        max_hours = int(os.getenv("JOB_SEARCH_HOURS", str(DEFAULT_SEARCH_HOURS)))
+
+    max_days = max(1, int(max_hours / 24))
     detected_ext = item.get("detected_extensions") or {}
     extensions = [str(x).lower() for x in (item.get("extensions") or [])]
 
     # 1. Inspect detected_extensions.posted_at
     posted_at = str(detected_ext.get("posted_at") or "").lower()
     if posted_at:
-        # Negative matches for older jobs
-        if any(old in posted_at for old in ["day ago", "days ago", "week", "month", "year"]):
-            if "1 day ago" in posted_at:
-                return True
+        # Check explicit day numbers e.g. "2 days ago", "5 days ago"
+        match = re.search(r"(\d+)\s+days?\s+ago", posted_at)
+        if match:
+            days_ago = int(match.group(1))
+            return days_ago <= max_days
+
+        # Far older indicators
+        if any(old in posted_at for old in ["week", "month", "year"]):
             return False
+
         if any(recent in posted_at for recent in ["hour", "minute", "second", "just now", "just posted", "today"]):
             return True
+        if "yesterday" in posted_at:
+            return max_days >= 1
 
     # 2. Inspect extensions array
     for ext in extensions:
-        if any(old in ext for old in ["2 days ago", "3 days ago", "4 days ago", "5 days ago", "6 days ago", "7 days ago", "week ago", "weeks ago", "month ago", "months ago", "30+ days ago"]):
+        match = re.search(r"(\d+)\s+days?\s+ago", ext)
+        if match:
+            days_ago = int(match.group(1))
+            return days_ago <= max_days
+
+        if any(old in ext for old in ["week ago", "weeks ago", "month ago", "months ago", "30+ days ago", "year"]):
             return False
-        if any(recent in ext for recent in ["hour ago", "hours ago", "minute ago", "minutes ago", "today", "just posted", "1 day ago"]):
+        if any(recent in ext for recent in ["hour ago", "hours ago", "minute ago", "minutes ago", "today", "just posted"]):
             return True
+        if "yesterday" in ext:
+            return max_days >= 1
 
     # 3. Check published datetime object if present (e.g. from RSS / direct feed)
     pub_dt = item.get("published_datetime")
@@ -189,14 +213,20 @@ def is_last_24_hours(item: Dict[str, Any]) -> bool:
         if pub_dt.tzinfo is None:
             pub_dt = pub_dt.replace(tzinfo=timezone.utc)
         diff = now - pub_dt
-        return diff <= timedelta(hours=24)
+        return diff <= timedelta(hours=max_hours)
 
-    # 4. If Google Jobs query had chips:date_posted:today or qdr:d specified, default to True
+    # 4. If Google Jobs query had chips or explicit today flag
     if item.get("_filtered_by_serpapi_today") is True:
         return True
 
-    # Default to accepting if no older indicator detected and came from 24h query
+    # Default to accepting if no older indicator detected
     return True
+
+
+def is_last_24_hours(item: Dict[str, Any]) -> bool:
+    """Strictly verify if the job was posted within the last 24 hours."""
+    return is_recent_posting(item, max_hours=24)
+
 
 
 def is_location_eligible(item: Dict[str, Any]) -> bool:
@@ -358,7 +388,7 @@ class JobScraper:
         limit: int = 15,
     ) -> List[Dict[str, Any]]:
         """
-        Perform HTTP request to SerpApi Google Jobs engine with last 24h filter chips.
+        Perform HTTP request to SerpApi Google Jobs engine without broken chips.
         """
         if not self.api_key:
             return []
@@ -368,7 +398,6 @@ class JobScraper:
             "q": query,
             "api_key": self.api_key,
             "hl": "en",
-            "chips": "date_posted:today",  # Google Jobs 24h filter
         }
         if location:
             params["location"] = location
@@ -378,24 +407,23 @@ class JobScraper:
             response.raise_for_status()
             data = response.json()
             jobs = data.get("jobs_results", [])
-            for j in jobs:
-                j["_filtered_by_serpapi_today"] = True
             return jobs[:limit]
         except Exception as exc:
             logger.debug("SerpApi query '%s' encountered issue: %s", query, exc)
             return []
 
-    def fetch_weworkremotely_feed(self) -> List[Dict[str, Any]]:
+    def fetch_weworkremotely_feed(self, max_hours: Optional[int] = None) -> List[Dict[str, Any]]:
         """Fetch remote programming jobs from We Work Remotely public feed."""
         url = "https://weworkremotely.com/categories/remote-programming-jobs.rss"
         jobs: List[Dict[str, Any]] = []
+        hours = max_hours if max_hours is not None else DEFAULT_SEARCH_HOURS
         try:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code != 200:
                 return []
             root = ET.fromstring(resp.content)
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
             for item in root.findall("./channel/item"):
                 title_elem = item.find("title")
@@ -415,7 +443,7 @@ class JobScraper:
                     except Exception:
                         pass
 
-                # Filter strictly last 24h if pubDate available
+                # Filter by recency window
                 if pub_dt and pub_dt < cutoff:
                     continue
 
@@ -440,17 +468,18 @@ class JobScraper:
             logger.debug("We Work Remotely feed error: %s", exc)
         return jobs
 
-    def fetch_remoteco_feed(self) -> List[Dict[str, Any]]:
+    def fetch_remoteco_feed(self, max_hours: Optional[int] = None) -> List[Dict[str, Any]]:
         """Fetch remote jobs from Remote.co developer RSS feed."""
         url = "https://remote.co/remote-jobs/developer/feed/"
         jobs: List[Dict[str, Any]] = []
+        hours = max_hours if max_hours is not None else DEFAULT_SEARCH_HOURS
         try:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code != 200:
                 return []
             root = ET.fromstring(resp.content)
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
             for item in root.findall("./channel/item"):
                 title_elem = item.find("title")
@@ -494,36 +523,47 @@ class JobScraper:
     ) -> List[ScrapedJob]:
         """
         Execute concurrent multi-source job scraping targeting 50-60+ daily jobs:
-        1. Iterate across the 12 primary keywords concurrently.
-        2. Query Google Jobs (covering LinkedIn, Indeed, Glassdoor, Wellfound, Bdjobs, etc.).
-        3. Query We Work Remotely and Remote.co live feeds.
-        4. Apply strict filters:
-           - Must be posted in the last 24 hours.
+        1. Queries across user's skills & requested platforms (LinkedIn, Workable, Indeed, Glassdoor, Micro1, WWR, Bdjobs).
+        2. Query We Work Remotely and Remote.co live feeds.
+        3. Apply filters:
+           - Recency filter (default 96 hours / 4 days for testing; easily set to 24h via JOB_SEARCH_HOURS).
            - Outside Bangladesh: MUST be Remote.
            - Bangladesh: Any type accepted.
            - STRICTLY EXCLUDE India and Pakistan.
-        5. Deduplicate and check 7-day database history.
+        4. Deduplicate and check 7-day database history.
         """
         raw_items: List[Dict[str, Any]] = []
 
         # Target query tasks to execute concurrently
         queries: List[Dict[str, Any]] = []
 
-        # 1. Targeted keyword queries
-        for kw in self.primary_keywords:
-            # Query for general remote postings
-            queries.append({"q": f'"{kw}" Remote', "location": None, "limit": 10})
-            # Targeted Bangladesh query (accepting all types in BD)
-            queries.append({"q": f'"{kw}" Bangladesh', "location": "Bangladesh", "limit": 5})
+        if job_keyword and job_keyword.strip():
+            kw = job_keyword.strip()
+            queries.append({"q": f'"{kw}" Remote', "location": None, "limit": 15})
+            queries.append({"q": f'"{kw}" linkedin', "location": None, "limit": 10})
+            queries.append({"q": f'"{kw}" Bangladesh', "location": "Bangladesh", "limit": 8})
+        else:
+            # 1. User core skills & engineering roles
+            queries.extend([
+                {"q": '"React" OR "Next.js" developer Remote', "location": None, "limit": 15},
+                {"q": '"Frontend developer" OR "Frontend Engineer" Remote', "location": None, "limit": 15},
+                {"q": '"Full Stack developer" OR "Full Stack Engineer" Remote', "location": None, "limit": 15},
+                {"q": '"Node.js" OR "TypeScript" developer Remote', "location": None, "limit": 15},
+                {"q": '"Python" OR "FastAPI" developer Remote', "location": None, "limit": 15},
+                {"q": '"Software Engineer" OR "Software Developer" Remote', "location": None, "limit": 15},
+            ])
 
-        # Add targeted platform queries
-        platform_queries = [
-            'site:bdjobs.com software engineer OR developer',
-            'site:linkedin.com/jobs ("frontend developer" OR "software engineer") Remote',
-            'site:weworkremotely.com python OR react OR "full stack"',
-        ]
-        for pq in platform_queries:
-            queries.append({"q": pq, "location": None, "limit": 8})
+            # 2. Targeted platforms requested by user (LinkedIn, Workable, Indeed, Glassdoor, Micro1, WWR, Bdjobs)
+            queries.extend([
+                {"q": '("React" OR "Next.js" OR "Frontend" OR "Full Stack") developer remote linkedin', "location": None, "limit": 12},
+                {"q": '("React" OR "Frontend" OR "Full stack") remote workable', "location": None, "limit": 12},
+                {"q": '("React" OR "Frontend" OR "Software engineer") remote indeed', "location": None, "limit": 12},
+                {"q": '("React" OR "Frontend" OR "Software engineer") remote glassdoor', "location": None, "limit": 12},
+                {"q": '("React" OR "Frontend" OR "Full stack" OR "Developer") remote micro1', "location": None, "limit": 10},
+                {"q": 'weworkremotely ("React" OR "Frontend" OR "Full stack")', "location": None, "limit": 10},
+                {"q": '("React" OR "Next.js" OR "Frontend" OR "Software Engineer") Bangladesh', "location": "Bangladesh", "limit": 8},
+                {"q": 'bdjobs ("software" OR "developer" OR "react" OR "frontend")', "location": "Bangladesh", "limit": 8},
+            ])
 
         # Execute concurrent worker pool
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
@@ -564,8 +604,8 @@ class JobScraper:
         seen_titles_companies: Set[str] = set()
 
         for item in raw_items:
-            # 1. Strict 24-hour check
-            if not is_last_24_hours(item):
+            # 1. Recency check (default 96 hours / 4 days for testing; or 24 hours)
+            if not is_recent_posting(item):
                 continue
 
             # 2. Strict location check (Remote outside BD, BD any, strictly exclude India/Pakistan)

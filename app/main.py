@@ -77,11 +77,15 @@ limiter = Limiter(
 )
 
 
+# Default match score threshold from environment
+DEFAULT_MATCH_SCORE = float(os.getenv("MIN_MATCH_SCORE", "55.0"))
+
+
 def run_daily_job_search_pipeline(job_keyword: Optional[str] = None) -> Dict[str, Any]:
     """
     Automated background pipeline executed daily:
-    1. Scrapes job listings via concurrent multi-source scraper (12 primary keywords).
-    2. Runs ChromaDB + FastEmbed vector RAG engine against base resume (cutoff >= 65%).
+    1. Scrapes job listings via concurrent multi-source scraper (skills & platform targets).
+    2. Runs ChromaDB + FastEmbed vector RAG engine against base resume (cutoff >= 55%).
     3. Persists qualified opportunities into Job table with scraped_date = date.today().
     4. Cleans up stale records older than 7 days.
     """
@@ -99,9 +103,10 @@ def run_daily_job_search_pipeline(job_keyword: Optional[str] = None) -> Dict[str
             pruned = delete_records_older_than(days=7, db=db)
             return {"scraped": 0, "matched": 0, "saved": 0, "pruned": pruned}
 
-        # Step 2: Vector RAG matching against resume (cutoff >= 65%)
-        matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=65.0)
-        logger.info("RAG Engine qualified %d jobs exceeding >=65%% match score.", len(matched_jobs))
+        # Step 2: Vector RAG matching against resume (cutoff >= 55%)
+        matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=DEFAULT_MATCH_SCORE)
+        logger.info("RAG Engine qualified %d jobs exceeding >=%.1f%% match score.", len(matched_jobs), DEFAULT_MATCH_SCORE)
+
 
         # Step 3: Persist matched opportunities
         today = date.today()
@@ -340,9 +345,9 @@ async def trigger_scrape_and_match(
             "message": "No new unique jobs discovered matching 24-hour and geographic filters.",
         }
 
-    # 2. Vector RAG evaluation (Strict cutoff >= 65%)
-    matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=65.0)
-    logger.info("RAG Engine qualified %d jobs exceeding >=65%% threshold.", len(matched_jobs))
+    # 2. Vector RAG evaluation (Strict cutoff >= 55%)
+    matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=DEFAULT_MATCH_SCORE)
+    logger.info("RAG Engine qualified %d jobs exceeding >=%.1f%% threshold.", len(matched_jobs), DEFAULT_MATCH_SCORE)
 
     today = date.today()
     saved_count = 0
@@ -375,7 +380,7 @@ async def trigger_scrape_and_match(
         "matched_count": len(matched_jobs),
         "saved_count": saved_count,
         "scraped_date": today.isoformat(),
-        "message": f"Successfully scraped {len(scraped_candidates)} candidates, matched {len(matched_jobs)} (>= 65%), and saved {saved_count} new jobs for {today}.",
+        "message": f"Successfully scraped {len(scraped_candidates)} candidates, matched {len(matched_jobs)} (>= {DEFAULT_MATCH_SCORE}%), and saved {saved_count} new jobs for {today}.",
     }
 
 
@@ -668,9 +673,9 @@ async def trigger_job_scrape_raw(
 async def match_scraped_jobs_endpoint(
     request: Request,
     jobs: List[ScrapedJob],
-    min_score: float = Query(65.0, ge=0.0, le=100.0, description="Minimum match score percentage cutoff"),
+    min_score: float = Query(DEFAULT_MATCH_SCORE, ge=0.0, le=100.0, description="Minimum match score percentage cutoff"),
 ):
-    """Vector RAG matching returning only jobs exceeding the match threshold (>= 65%)."""
+    """Vector RAG matching returning only jobs exceeding the match threshold (>= 55%)."""
     rag = RAGEngine()
     matched = rag.match_jobs(jobs, min_match_score=min_score)
     return matched

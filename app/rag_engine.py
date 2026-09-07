@@ -16,7 +16,8 @@ logger = logging.getLogger("your_assistant.rag_engine")
 
 DEFAULT_RESUME_PATH = Path("data") / "resume.txt"
 DEFAULT_CHROMA_PATH = "./chroma_db"
-MIN_MATCH_THRESHOLD = 65.0  # Cutoff (>= 65%) to filter qualified job matches
+MIN_MATCH_THRESHOLD = float(os.getenv("MIN_MATCH_SCORE", "55.0"))  # Cutoff (>= 55%) to filter qualified job matches
+
 
 
 # ==============================================================================
