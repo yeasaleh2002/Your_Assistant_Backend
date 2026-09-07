@@ -14,7 +14,12 @@ Session = _orm.Session
 
 logger = logging.getLogger("your_assistant.database")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./jobs.db").strip()
+is_vercel = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+default_db_url = "sqlite:////tmp/jobs.db" if is_vercel else "sqlite:///./jobs.db"
+DATABASE_URL = os.getenv("DATABASE_URL", default_db_url).strip()
+
+if is_vercel and DATABASE_URL.startswith("sqlite:///."):
+    DATABASE_URL = "sqlite:////tmp/jobs.db"
 
 # Normalize Heroku/Render legacy postgres:// to postgresql://
 if DATABASE_URL.startswith("postgres://"):
@@ -32,8 +37,8 @@ else:
     # Production PostgreSQL or MySQL connection pooling
     engine = create_engine(
         DATABASE_URL,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=5 if is_vercel else 10,
+        max_overflow=10 if is_vercel else 20,
         pool_pre_ping=True,
         pool_recycle=1800,
         echo=False,

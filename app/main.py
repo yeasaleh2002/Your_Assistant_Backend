@@ -150,50 +150,55 @@ def run_daily_job_search_pipeline(job_keyword: Optional[str] = None) -> Dict[str
 async def lifespan(app: FastAPI):
     """
     Application lifespan context manager:
-    - Creates database tables on startup.
-    - Initializes and starts the automated daily job search & retention scheduler.
+    - Creates database tables on startup (with graceful fallback).
+    - Initializes and starts the automated daily job search & retention scheduler if running as persistent server.
     - Gracefully stops the scheduler on shutdown.
     """
     logger.info("Initializing 'Your Assistant' AI Job Search Platform...")
-    Base.metadata.create_all(bind=engine)
-
-    # Initialize automated scheduler
-    scheduler = AsyncIOScheduler()
-
-    # 1. Schedule daily automated scraping & RAG matching pipeline (every 24 hours)
-    scheduler.add_job(
-        func=run_daily_job_search_pipeline,
-        trigger="interval",
-        hours=24,
-        id="daily_job_search_pipeline",
-        replace_existing=True,
-    )
-
-    # 2. Schedule daily data retention pruning (every 24 hours)
-    scheduler.add_job(
-        func=delete_records_older_than,
-        trigger="interval",
-        hours=24,
-        args=[7],
-        id="job_retention_cleanup",
-        replace_existing=True,
-    )
-
-    scheduler.start()
-    logger.info("Automated daily job search and 7-day retention scheduler active.")
-
-    # Startup maintenance
     try:
-        pruned = delete_records_older_than(days=7)
-        if pruned > 0:
-            logger.info("Startup cleanup pruned %d outdated job records.", pruned)
+        Base.metadata.create_all(bind=engine)
     except Exception as exc:
-        logger.warning("Startup retention cleanup notice: %s", exc)
+        logger.warning("Database schema init notice: %s", exc)
+
+    # In serverless environments like Vercel, persistent cron loops cannot run
+    is_serverless = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+    scheduler = None
+
+    if not is_serverless:
+        try:
+            scheduler = AsyncIOScheduler()
+            scheduler.add_job(
+                func=run_daily_job_search_pipeline,
+                trigger="interval",
+                hours=24,
+                id="daily_job_search_pipeline",
+                replace_existing=True,
+            )
+            scheduler.add_job(
+                func=delete_records_older_than,
+                trigger="interval",
+                hours=24,
+                args=[7],
+                id="job_retention_cleanup",
+                replace_existing=True,
+            )
+            scheduler.start()
+            logger.info("Automated daily job search and 7-day retention scheduler active.")
+        except Exception as exc:
+            logger.warning("Scheduler startup notice: %s", exc)
+
+        try:
+            pruned = delete_records_older_than(days=7)
+            if pruned > 0:
+                logger.info("Startup cleanup pruned %d outdated job records.", pruned)
+        except Exception as exc:
+            logger.warning("Startup retention cleanup notice: %s", exc)
 
     yield
 
-    logger.info("Shutting down 'Your Assistant' platform...")
-    scheduler.shutdown(wait=False)
+    if scheduler is not None:
+        logger.info("Shutting down scheduler...")
+        scheduler.shutdown(wait=False)
 
 
 # Initialize FastAPI Application
@@ -228,6 +233,10 @@ app.add_middleware(
 # ==============================================================================
 
 @app.get("/", tags=["Health"])
+@app.get("/health", tags=["Health"])
+@app.get("/api", tags=["Health"])
+@app.get("/api/health", tags=["Health"])
+@app.get("/api/index", tags=["Health"])
 @limiter.limit("60/minute")
 async def health_check(request: Request):
     """
