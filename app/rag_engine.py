@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
+from chromadb.api.types import Metadata
 from fastembed import TextEmbedding
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -73,14 +74,9 @@ class MatchedJob(BaseModel):
     )
 
 
-# ==============================================================================
-# RAG Engine Core
-# ==============================================================================
-
 class RAGEngine:
     """
-    Local Vector RAG Engine using ChromaDB.
-    
+    Local RAG Engine using ChromaDB and FastEmbed embeddings.
     Embeds the user's base resume and performs cosine similarity matching on
     scraped job postings, strictly returning candidates with match score > 75%.
     """
@@ -91,7 +87,7 @@ class RAGEngine:
         resume_path: Union[str, Path] = DEFAULT_RESUME_PATH,
         embedding_function: Optional[EmbeddingFunction] = None,
     ):
-        self.db_path = str(db_path)
+        self.db_path = db_path
         self.resume_path = Path(resume_path)
         self.embedding_function = embedding_function or FastEmbedEmbeddingFunction()
 
@@ -186,7 +182,7 @@ class RAGEngine:
         standardized_jobs: List[ScrapedJob] = []
         documents: List[str] = []
         ids: List[str] = []
-        metadatas: List[Dict[str, Any]] = []
+        metadatas: List[Metadata] = []
 
         for idx, job in enumerate(jobs):
             if isinstance(job, dict):
@@ -217,15 +213,28 @@ class RAGEngine:
         )
 
         matched_jobs: List[MatchedJob] = []
-        distances = query_results.get("distances", [[]])[0]
-        result_metadatas = query_results.get("metadatas", [[]])[0]
+        distances_matrix = query_results.get("distances")
+        metadatas_matrix = query_results.get("metadatas")
+
+        if not distances_matrix or not metadatas_matrix:
+            return []
+
+        distances = distances_matrix[0]
+        result_metadatas = metadatas_matrix[0]
 
         for dist, meta in zip(distances, result_metadatas):
-            job_idx = meta["index"]
+            if not meta or "index" not in meta:
+                continue
+            raw_idx = meta["index"]
+            if not isinstance(raw_idx, (int, str)):
+                continue
+            job_idx = int(raw_idx)
+            if not (0 <= job_idx < len(standardized_jobs)):
+                continue
             candidate = standardized_jobs[job_idx]
 
             # In ChromaDB with cosine space: distance = 1 - cosine_similarity
-            cosine_similarity = 1.0 - float(dist)
+            cosine_similarity = 1.0 - dist
             score_pct = round(cosine_similarity * 100.0, 2)
             score_pct = max(0.0, min(100.0, score_pct))
 

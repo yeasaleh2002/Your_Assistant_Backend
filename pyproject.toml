@@ -3,6 +3,7 @@ python-interpreter-path = "C:/Users/yeasa/anaconda3/python.exe"
 search-path = [
     ".",
     "app",
+    "typings",
     "C:/Users/yeasa/anaconda3/Lib/site-packages",
     "C:/Users/yeasa/AppData/Local/Python/pythoncore-3.14-64/Lib/site-packages"
 ]
