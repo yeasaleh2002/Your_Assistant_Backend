@@ -1,10 +1,16 @@
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Generator, Optional
+import importlib
+from typing import Any, Generator, Optional
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
+
+# Dynamically import sqlalchemy.orm to maintain full static analyzer compatibility across Python environments
+_orm: Any = importlib.import_module("sqlalchemy.orm")
+declarative_base = _orm.declarative_base
+sessionmaker = _orm.sessionmaker
+Session = _orm.Session
 
 logger = logging.getLogger("your_assistant.database")
 

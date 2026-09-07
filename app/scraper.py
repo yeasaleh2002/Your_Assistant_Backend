@@ -6,9 +6,8 @@ from urllib.parse import urlparse
 
 import requests
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.orm import Session
 
-from app.database import SessionLocal, get_existing_recent_links
+from app.database import Session, SessionLocal, get_existing_recent_links
 
 logger = logging.getLogger("your_assistant.scraper")
 
