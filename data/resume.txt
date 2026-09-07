@@ -1,0 +1,30 @@
+ALEX RIVERA
+Senior Python & AI Platform Engineer | Full-Stack ML Systems
+Email: alex.rivera@example.com | GitHub: github.com/alexrivera-ai | Location: San Francisco, CA (Open to Remote)
+
+PROFESSIONAL SUMMARY
+Results-driven Senior Python Engineer with 7+ years of experience architecting high-throughput backend services, autonomous AI agents, and RAG (Retrieval-Augmented Generation) pipelines. Expert in Python, FastAPI, SQLAlchemy, ChromaDB, vector embeddings, asynchronous distributed workflows, and cloud-native microservices. Passionate about automating intelligent job discovery and scaling low-latency ML applications.
+
+CORE TECHNICAL SKILLS
+- Programming & Frameworks: Python, FastAPI, Starlette, Pydantic, asyncio, Flask, TypeScript, Node.js
+- AI, ML & Vector Search: ChromaDB, LangChain, LlamaIndex, OpenAI API, HuggingFace Transformers, Sentence-Transformers, all-MiniLM-L6-v2, ONNX, Embeddings, Cosine Similarity, RAG pipelines
+- Data & Storage: PostgreSQL, SQLite, SQLAlchemy ORM, Redis, Vector Databases, Alembic
+- Web Scraping & Ingestion: SerpApi, BeautifulSoup, Scrapy, Playwright, HTTPX, rate limiting, anti-bot mitigation
+- DevOps & Cloud: Docker, Kubernetes, AWS (ECS, S3, RDS), GitHub Actions, CI/CD, Linux, Prometheus
+
+PROFESSIONAL EXPERIENCE
+
+Senior AI Systems Engineer | HiveTech Solutions | 2022 - Present
+- Architected and deployed an automated LLM candidate matching and job ingestion pipeline using FastAPI, ChromaDB, and Python, decreasing manual sourcing time by 80%.
+- Implemented real-time vector search using cosine similarity over thousands of job descriptions with sub-50ms latency.
+- Enforced strict API security, IP rate limiting (SlowAPI), and payload validation schemas preventing injection attacks across public ingestion endpoints.
+- Designed automated self-cleaning retention policies and cron schedulers (APScheduler) maintaining a lean vector index and SQLite/PostgreSQL databases.
+
+Senior Backend Engineer | Apex Cloud Innovations | 2019 - 2022
+- Led a team of 5 backend engineers developing distributed microservices in Python and FastAPI handling 15M+ requests daily.
+- Built high-speed asynchronous data scrapers and crawler workers extracting and deduplicating records across hundreds of domains.
+- Integrated relational databases (PostgreSQL/SQLAlchemy) with Redis caching layers, cutting query latency by 45%.
+
+EDUCATION & CERTIFICATIONS
+- B.S. in Computer Science | University of California, Berkeley
+- AWS Certified Solutions Architect – Associate

@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.db
+.pytest_cache/
+.env
+.venv/
+venv/
+output/
+chroma_db/
+
