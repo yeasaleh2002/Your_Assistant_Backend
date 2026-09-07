@@ -16,7 +16,7 @@ logger = logging.getLogger("your_assistant.rag_engine")
 
 DEFAULT_RESUME_PATH = Path("data") / "resume.txt"
 DEFAULT_CHROMA_PATH = "./chroma_db"
-MIN_MATCH_THRESHOLD = 75.0  # Strict cutoff (> 75%) to minimize LLM token usage
+MIN_MATCH_THRESHOLD = 65.0  # Cutoff (>= 65%) to filter qualified job matches
 
 
 # ==============================================================================
@@ -73,6 +73,10 @@ class MatchedJob(BaseModel):
         le=100.0,
         description="Cosine similarity match score percentage against user resume",
     )
+
+    @property
+    def link(self) -> str:
+        return self.job_link
 
 
 class RAGEngine:
@@ -247,8 +251,8 @@ class RAGEngine:
                 score_pct,
             )
 
-            # STRICT CUTOFF: Return ONLY jobs with match score > min_match_score (75%)
-            if score_pct > min_match_score:
+            # STRICT CUTOFF: Return ONLY jobs with match score >= min_match_score (65%)
+            if score_pct >= min_match_score:
                 matched_jobs.append(
                     MatchedJob(
                         title=candidate.title,

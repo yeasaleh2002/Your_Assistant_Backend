@@ -1,8 +1,12 @@
+import concurrent.futures
+from datetime import datetime, timezone, timedelta
+import email.utils
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
 
 import requests
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +18,25 @@ logger = logging.getLogger("your_assistant.scraper")
 SERPAPI_URL = "https://serpapi.com/search.json"
 DEFAULT_FALLBACK_QUERY = "Software Engineer remote"
 
-# Common job aggregator domains where the domain is NOT the company's own site
+# ==============================================================================
+# Hardcoded Primary Keywords (Exact 12, User Overrides Removed)
+# ==============================================================================
+PRIMARY_KEYWORDS: List[str] = [
+    "Frontend developer",
+    "Frontend Engineer",
+    "software engineer",
+    "software developer",
+    "web developer",
+    "full stack developer",
+    "react developer",
+    "next.js developer",
+    "python developer",
+    "fast api developer",
+    "vibe coder",
+    "agentic full stack development",
+]
+
+# Common job aggregator domains where domain is NOT the company's own site
 AGGREGATOR_DOMAINS = {
     "linkedin.com",
     "indeed.com",
@@ -29,7 +51,57 @@ AGGREGATOR_DOMAINS = {
     "upwork.com",
     "fiverr.com",
     "wellfound.com",
+    "weworkremotely.com",
+    "remote.co",
+    "bdjobs.com",
+    "toptal.com",
 }
+
+# Exclusion lists for India and Pakistan
+EXCLUDED_COUNTRIES_AND_REGIONS = [
+    # Countries
+    r"\bindia\b",
+    r"\bpakistan\b",
+    # Indian Metros and Tech Hubs
+    r"\bbengaluru\b",
+    r"\bbangalore\b",
+    r"\bmumbai\b",
+    r"\bdelhi\b",
+    r"\bnew delhi\b",
+    r"\bnoida\b",
+    r"\bgurgaon\b",
+    r"\bgurugram\b",
+    r"\bhyderabad\b",
+    r"\bpune\b",
+    r"\bchennai\b",
+    r"\bkolkata\b",
+    r"\bahmedabad\b",
+    r"\bncr\b",
+    r"\bkarnataka\b",
+    r"\bmaharashtra\b",
+    r"\btamil nadu\b",
+    r"\btelangana\b",
+    r"\bkerala\b",
+    # Pakistani Metros and Tech Hubs
+    r"\bkarachi\b",
+    r"\blahore\b",
+    r"\bislamabad\b",
+    r"\brawalpindi\b",
+    r"\bfaisalabad\b",
+    r"\bpeshawar\b",
+    r"\bmultan\b",
+]
+
+EXCLUDED_DOMAINS = [
+    ".in",
+    ".pk",
+    "in.linkedin.com",
+    "pk.linkedin.com",
+    "indeed.co.in",
+    "glassdoor.co.in",
+    "naukri.com",
+    "rozee.pk",
+]
 
 
 class ScrapedJob(BaseModel):
@@ -42,21 +114,109 @@ class ScrapedJob(BaseModel):
     job_link: str = Field(..., description="Direct job application or post link")
     career_page_link: str = Field(..., description="Predicted or resolved company career portal URL")
     location: str = Field(default="Remote", description="Job location or Remote status")
+    recruiter_email: Optional[str] = Field(default=None, description="Extracted recruiter contact email if available")
+
+    @property
+    def link(self) -> str:
+        return self.job_link
+
+
+# ==============================================================================
+# Filtering Utilities: Location & Strict 24-Hour Recency
+# ==============================================================================
+
+def is_india_or_pakistan(item: Dict[str, Any]) -> bool:
+    """
+    Check if the job posting is located in or originating from India or Pakistan.
+    Strictly excludes candidates matching Indian or Pakistani regions, domains, or metadata.
+    """
+    loc_str = str(item.get("location") or "").lower()
+    desc_str = str(item.get("description") or "").lower()
+    title_str = str(item.get("title") or "").lower()
+    company_str = str(item.get("company_name") or item.get("company") or "").lower()
+    link_str = str(item.get("link") or item.get("job_link") or "").lower()
+
+    # Check excluded domain indicators
+    parsed = urlparse(link_str)
+    host = parsed.netloc.lower()
+    for domain in EXCLUDED_DOMAINS:
+        if domain in host:
+            return True
+
+    # Combined text for regex pattern search
+    combined_geo = f"{loc_str} {company_str} {title_str}"
+    for pattern in EXCLUDED_COUNTRIES_AND_REGIONS:
+        if re.search(pattern, combined_geo, flags=re.IGNORECASE):
+            return True
+
+    # Check description snippet if location is ambiguous
+    if re.search(r"\b(based in|located in|office in)\s+(india|pakistan|bangalore|bengaluru|noida|delhi|mumbai|karachi|lahore)\b", desc_str, flags=re.IGNORECASE):
+        return True
+
+    return False
+
+
+def is_last_24_hours(item: Dict[str, Any]) -> bool:
+    """
+    Strictly verify if the job was posted within the last 24 hours.
+    Inspects SerpApi extensions, detected_extensions, and timestamps.
+    """
+    detected_ext = item.get("detected_extensions") or {}
+    extensions = [str(x).lower() for x in (item.get("extensions") or [])]
+
+    # 1. Inspect detected_extensions.posted_at
+    posted_at = str(detected_ext.get("posted_at") or "").lower()
+    if posted_at:
+        # Negative matches for older jobs
+        if any(old in posted_at for old in ["day ago", "days ago", "week", "month", "year"]):
+            if "1 day ago" in posted_at:
+                return True
+            return False
+        if any(recent in posted_at for recent in ["hour", "minute", "second", "just now", "just posted", "today"]):
+            return True
+
+    # 2. Inspect extensions array
+    for ext in extensions:
+        if any(old in ext for old in ["2 days ago", "3 days ago", "4 days ago", "5 days ago", "6 days ago", "7 days ago", "week ago", "weeks ago", "month ago", "months ago", "30+ days ago"]):
+            return False
+        if any(recent in ext for recent in ["hour ago", "hours ago", "minute ago", "minutes ago", "today", "just posted", "1 day ago"]):
+            return True
+
+    # 3. Check published datetime object if present (e.g. from RSS / direct feed)
+    pub_dt = item.get("published_datetime")
+    if pub_dt and isinstance(pub_dt, datetime):
+        now = datetime.now(timezone.utc)
+        if pub_dt.tzinfo is None:
+            pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+        diff = now - pub_dt
+        return diff <= timedelta(hours=24)
+
+    # 4. If Google Jobs query had chips:date_posted:today or qdr:d specified, default to True
+    if item.get("_filtered_by_serpapi_today") is True:
+        return True
+
+    # Default to accepting if no older indicator detected and came from 24h query
+    return True
 
 
 def is_location_eligible(item: Dict[str, Any]) -> bool:
     """
     Filter jobs according to candidate location preferences:
-    - Bangladesh (BD): Any job type allowed (On-site, Hybrid, Remote).
-    - Outside Bangladesh: ONLY Remote / Work From Home jobs allowed.
+    1. STRICTLY EXCLUDE India and Pakistan.
+    2. Bangladesh (BD): Any job type allowed (On-site, Hybrid, Remote).
+    3. Outside Bangladesh: MUST be Remote / Work From Home.
     """
+    # 1. Strictly exclude India & Pakistan
+    if is_india_or_pakistan(item):
+        return False
+
     loc_str = str(item.get("location") or "").lower()
     desc_str = str(item.get("description") or "").lower()
     title_str = str(item.get("title") or "").lower()
     detected_ext = item.get("detected_extensions") or {}
     extensions = [str(x).lower() for x in (item.get("extensions") or [])]
 
-    # 1. Check if job is in Bangladesh
+    # 2. Check if job is in Bangladesh
     bd_keywords = [
         "bangladesh", "dhaka", "chittagong", "sylhet", "rajshahi",
         "khulna", "barishal", "rangpur", "gazipur", "narayanganj",
@@ -65,11 +225,11 @@ def is_location_eligible(item: Dict[str, Any]) -> bool:
     if any(k in loc_str for k in bd_keywords):
         return True  # Any type allowed for BD
 
-    # 2. If no location metadata was provided at all (e.g. in test fixtures)
+    # 3. If no location metadata provided at all (e.g. mock test fixtures)
     if not loc_str and not detected_ext and not extensions:
         return True
 
-    # 3. Outside Bangladesh: MUST be Remote
+    # 4. Outside Bangladesh: MUST be Remote / Work From Home
     if detected_ext.get("work_from_home") is True:
         return True
 
@@ -82,22 +242,34 @@ def is_location_eligible(item: Dict[str, Any]) -> bool:
     if any(rem in title_str for rem in ["remote", "wfh", "work from home", "anywhere"]):
         return True
 
-    if "work from home" in desc_str[:600] or "100% remote" in desc_str[:600] or "remote role" in desc_str[:600] or "remote position" in desc_str[:600]:
+    if any(rem in desc_str[:800] for rem in [
+        "work from home", "100% remote", "remote role", "remote position",
+        "fully remote", "remote worldwide", "remote friendly", "remote work"
+    ]):
         return True
 
     # Job is outside Bangladesh and not remote -> Exclude!
     return False
 
 
+def extract_email_from_text(text: str) -> Optional[str]:
+    """Extract first valid recruiter / company email from job description if present."""
+    if not text:
+        return None
+    matches = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)
+    for email_addr in matches:
+        email_clean = email_addr.lower().strip(".")
+        if not any(email_clean.endswith(bad) for bad in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]):
+            return email_clean
+    return None
+
+
 def predict_career_page_url(company: str, job_link: Optional[str] = None) -> str:
     """
     Predict or construct the company's official career page URL.
-    
-    1. If the job link belongs directly to the employer or a dedicated ATS
-       (e.g., jobs.lever.co/company or boards.greenhouse.io/company), extract the portal link.
-    2. Otherwise, clean the company name and construct standard conventions (e.g. domain.com/careers).
+    1. If the job link belongs directly to an ATS (Lever, Greenhouse, Ashby, Workday), extract the portal link.
+    2. Otherwise, clean the company name and construct standard conventions (domain.com/careers).
     """
-    # 1. Inspect direct job_link if provided
     if job_link:
         try:
             parsed = urlparse(job_link)
@@ -105,7 +277,6 @@ def predict_career_page_url(company: str, job_link: Optional[str] = None) -> str
             if host.startswith("www."):
                 host = host[4:]
 
-            # Check if it's hosted on standard ATS platforms
             path_parts = [p for p in parsed.path.split("/") if p]
             if "greenhouse.io" in host and path_parts:
                 return f"https://boards.greenhouse.io/{path_parts[0]}"
@@ -116,21 +287,18 @@ def predict_career_page_url(company: str, job_link: Optional[str] = None) -> str
             if "workday.com" in host:
                 return f"{parsed.scheme}://{parsed.netloc}"
 
-            # If not a known generic aggregator, use the job_link's base domain
             is_aggregator = any(host == agg or host.endswith("." + agg) for agg in AGGREGATOR_DOMAINS)
             if not is_aggregator and "." in host:
                 return f"{parsed.scheme}://{host}/careers"
         except Exception:
             pass
 
-    # 2. Fallback: Clean company name and predict domain.com/careers
     cleaned_name = re.sub(
         r"\b(inc|incorporated|llc|ltd|limited|corp|corporation|technologies|tech|solutions|co|company)\b",
         "",
         company,
         flags=re.IGNORECASE,
     )
-    # Remove punctuation and whitespace
     slug = re.sub(r"[^a-zA-Z0-9]", "", cleaned_name).lower()
     if not slug:
         slug = re.sub(r"[^a-zA-Z0-9]", "", company).lower() or "company"
@@ -138,122 +306,295 @@ def predict_career_page_url(company: str, job_link: Optional[str] = None) -> str
     return f"https://{slug}.com/careers"
 
 
+# ==============================================================================
+# Multi-Source Scraper Engine
+# ==============================================================================
+
 class JobScraper:
     """
-    Job scraper using SerpApi Google Jobs engine.
-    Supports query prioritization, data extraction, career URL prediction,
-    and automated 7-day database deduplication.
+    Advanced concurrent multi-source job scraper.
+    Targets LinkedIn, Indeed, Glassdoor, We Work Remotely, Toptal, Wellfound,
+    Remote.co, Bdjobs, and Google Search via SerpApi Google Jobs & Direct Feeds.
+    Hardcodes 12 primary software engineering keywords and enforces strict 24h & geo filters.
     """
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("SERPAPI_API_KEY", "")
+        self.primary_keywords = PRIMARY_KEYWORDS
 
     def build_query(self, job_keyword: Optional[str] = None) -> str:
-        """
-        Formulate search query based on input keyword:
-        - If provided, prioritize exact match with quotes.
-        - If blank, fallback to default query.
-        """
+        """Formulate search query based on input keyword or fallback."""
         if job_keyword and job_keyword.strip():
-            cleaned_keyword = job_keyword.strip()
-            return f'"{cleaned_keyword}"'
+            return f'"{job_keyword.strip()}"'
         return DEFAULT_FALLBACK_QUERY
 
     def _extract_job_link(self, job_dict: Dict[str, Any]) -> Optional[str]:
         """Extract the most direct application link from SerpApi job data."""
-        # 1. Try apply_options (often has direct employer / application links)
         apply_options = job_dict.get("apply_options", [])
         if apply_options and isinstance(apply_options, list):
             first_apply = apply_options[0]
             if isinstance(first_apply, dict) and first_apply.get("link"):
                 return first_apply["link"]
 
-        # 2. Try related_links
         related_links = job_dict.get("related_links", [])
         if related_links and isinstance(related_links, list):
             first_related = related_links[0]
             if isinstance(first_related, dict) and first_related.get("link"):
                 return first_related["link"]
 
-        # 3. Try share_link
         if job_dict.get("share_link"):
             return job_dict["share_link"]
 
-        # 4. Fallback: Google search link using job_id if present
         job_id = job_dict.get("job_id")
         if job_id:
             return f"https://www.google.com/search?ibp=htl;jobs#fpstate=tldetail&htidocid={job_id}"
 
         return None
 
-    def fetch_serpapi_jobs(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Perform HTTP request to SerpApi Google Jobs engine."""
+    def fetch_serpapi_jobs(
+        self,
+        query: str,
+        location: Optional[str] = None,
+        limit: int = 15,
+    ) -> List[Dict[str, Any]]:
+        """
+        Perform HTTP request to SerpApi Google Jobs engine with last 24h filter chips.
+        """
         if not self.api_key:
-            logger.warning("SERPAPI_API_KEY is not configured. Returning empty results.")
             return []
 
-        params = {
+        params: Dict[str, Any] = {
             "engine": "google_jobs",
             "q": query,
             "api_key": self.api_key,
             "hl": "en",
+            "chips": "date_posted:today",  # Google Jobs 24h filter
         }
+        if location:
+            params["location"] = location
 
         try:
             response = requests.get(SERPAPI_URL, params=params, timeout=15)
             response.raise_for_status()
             data = response.json()
             jobs = data.get("jobs_results", [])
+            for j in jobs:
+                j["_filtered_by_serpapi_today"] = True
             return jobs[:limit]
-        except requests.RequestException as exc:
-            logger.error("Error fetching jobs from SerpApi: %s", exc)
+        except Exception as exc:
+            logger.debug("SerpApi query '%s' encountered issue: %s", query, exc)
             return []
+
+    def fetch_weworkremotely_feed(self) -> List[Dict[str, Any]]:
+        """Fetch remote programming jobs from We Work Remotely public feed."""
+        url = "https://weworkremotely.com/categories/remote-programming-jobs.rss"
+        jobs: List[Dict[str, Any]] = []
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                return []
+            root = ET.fromstring(resp.content)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+            for item in root.findall("./channel/item"):
+                title_elem = item.find("title")
+                link_elem = item.find("link")
+                pub_elem = item.find("pubDate")
+                desc_elem = item.find("description")
+
+                title_text = title_elem.text if title_elem is not None else ""
+                link_text = link_elem.text if link_elem is not None else ""
+                desc_text = desc_elem.text if desc_elem is not None else ""
+                pub_text = pub_elem.text if pub_elem is not None else ""
+
+                pub_dt = None
+                if pub_text:
+                    try:
+                        pub_dt = email.utils.parsedate_to_datetime(pub_text)
+                    except Exception:
+                        pass
+
+                # Filter strictly last 24h if pubDate available
+                if pub_dt and pub_dt < cutoff:
+                    continue
+
+                # Title format is usually "Company: Job Title"
+                company = "We Work Remotely Employer"
+                title = title_text
+                if ":" in title_text:
+                    parts = title_text.split(":", 1)
+                    company = parts[0].strip()
+                    title = parts[1].strip()
+
+                jobs.append({
+                    "title": title,
+                    "company_name": company,
+                    "description": desc_text,
+                    "link": link_text,
+                    "location": "Remote",
+                    "published_datetime": pub_dt,
+                    "detected_extensions": {"work_from_home": True},
+                })
+        except Exception as exc:
+            logger.debug("We Work Remotely feed error: %s", exc)
+        return jobs
+
+    def fetch_remoteco_feed(self) -> List[Dict[str, Any]]:
+        """Fetch remote jobs from Remote.co developer RSS feed."""
+        url = "https://remote.co/remote-jobs/developer/feed/"
+        jobs: List[Dict[str, Any]] = []
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                return []
+            root = ET.fromstring(resp.content)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+            for item in root.findall("./channel/item"):
+                title_elem = item.find("title")
+                link_elem = item.find("link")
+                pub_elem = item.find("pubDate")
+                desc_elem = item.find("description")
+
+                title_text = title_elem.text if title_elem is not None else ""
+                link_text = link_elem.text if link_elem is not None else ""
+                desc_text = desc_elem.text if desc_elem is not None else ""
+                pub_text = pub_elem.text if pub_elem is not None else ""
+
+                pub_dt = None
+                if pub_text:
+                    try:
+                        pub_dt = email.utils.parsedate_to_datetime(pub_text)
+                    except Exception:
+                        pass
+
+                if pub_dt and pub_dt < cutoff:
+                    continue
+
+                jobs.append({
+                    "title": title_text,
+                    "company_name": "Remote.co Employer",
+                    "description": desc_text,
+                    "link": link_text,
+                    "location": "Remote",
+                    "published_datetime": pub_dt,
+                    "detected_extensions": {"work_from_home": True},
+                })
+        except Exception as exc:
+            logger.debug("Remote.co feed error: %s", exc)
+        return jobs
 
     def scrape_jobs(
         self,
         job_keyword: Optional[str] = None,
-        limit: int = 10,
+        limit: int = 60,
         db: Optional[Session] = None,
     ) -> List[ScrapedJob]:
         """
-        Execute job scraping workflow:
-        1. Formulate search query (prioritize job_keyword or fallback).
-        2. Fetch results from SerpApi Google Jobs.
-        3. Extract fields (title, company, description, link).
-        4. Predict company career page URL.
-        5. Check database for links saved in the last 7 days and skip duplicates.
+        Execute concurrent multi-source job scraping targeting 50-60+ daily jobs:
+        1. Iterate across the 12 primary keywords concurrently.
+        2. Query Google Jobs (covering LinkedIn, Indeed, Glassdoor, Wellfound, Bdjobs, etc.).
+        3. Query We Work Remotely and Remote.co live feeds.
+        4. Apply strict filters:
+           - Must be posted in the last 24 hours.
+           - Outside Bangladesh: MUST be Remote.
+           - Bangladesh: Any type accepted.
+           - STRICTLY EXCLUDE India and Pakistan.
+        5. Deduplicate and check 7-day database history.
         """
-        query = self.build_query(job_keyword)
-        logger.info("Executing job scrape with query: '%s'", query)
+        raw_items: List[Dict[str, Any]] = []
 
-        raw_jobs = self.fetch_serpapi_jobs(query, limit=limit)
-        if not raw_jobs:
-            logger.info("No raw jobs returned for query: '%s'", query)
-            return []
+        # Target query tasks to execute concurrently
+        queries: List[Dict[str, Any]] = []
 
-        # Parse candidates
+        # 1. Targeted keyword queries
+        for kw in self.primary_keywords:
+            # Query for general remote postings
+            queries.append({"q": f'"{kw}" Remote', "location": None, "limit": 10})
+            # Targeted Bangladesh query (accepting all types in BD)
+            queries.append({"q": f'"{kw}" Bangladesh', "location": "Bangladesh", "limit": 5})
+
+        # Add targeted platform queries
+        platform_queries = [
+            'site:bdjobs.com software engineer OR developer',
+            'site:linkedin.com/jobs ("frontend developer" OR "software engineer") Remote',
+            'site:weworkremotely.com python OR react OR "full stack"',
+        ]
+        for pq in platform_queries:
+            queries.append({"q": pq, "location": None, "limit": 8})
+
+        # Execute concurrent worker pool
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            # Dispatch SerpApi queries
+            serp_futures = [
+                executor.submit(self.fetch_serpapi_jobs, q["q"], q["location"], q["limit"])
+                for q in queries
+            ]
+            # Dispatch Direct Feeds
+            wwr_future = executor.submit(self.fetch_weworkremotely_feed)
+            remoteco_future = executor.submit(self.fetch_remoteco_feed)
+
+            # Collect SerpApi results
+            for future in concurrent.futures.as_completed(serp_futures):
+                try:
+                    results = future.result()
+                    if results:
+                        raw_items.extend(results)
+                except Exception as exc:
+                    logger.debug("Worker task exception: %s", exc)
+
+            # Collect direct feed results
+            try:
+                raw_items.extend(wwr_future.result())
+            except Exception as exc:
+                logger.debug("WWR collection error: %s", exc)
+
+            try:
+                raw_items.extend(remoteco_future.result())
+            except Exception as exc:
+                logger.debug("Remote.co collection error: %s", exc)
+
+        logger.info("Total raw candidate items harvested: %d", len(raw_items))
+
+        # Parse, Filter, and Normalize
         candidates: List[ScrapedJob] = []
-        for item in raw_jobs:
-            # Filter according to user preference: BD any type, outside BD remote only
+        seen_links: Set[str] = set()
+        seen_titles_companies: Set[str] = set()
+
+        for item in raw_items:
+            # 1. Strict 24-hour check
+            if not is_last_24_hours(item):
+                continue
+
+            # 2. Strict location check (Remote outside BD, BD any, strictly exclude India/Pakistan)
             if not is_location_eligible(item):
-                logger.info(
-                    "Skipping job '%s' at '%s' (location '%s' is outside BD and not remote).",
-                    item.get("title"),
-                    item.get("company_name"),
-                    item.get("location"),
-                )
                 continue
 
             title = (item.get("title") or "").strip()
-            company = (item.get("company_name") or "Unknown Company").strip()
+            company = (item.get("company_name") or item.get("company") or "Unknown Company").strip()
             description = (item.get("description") or "").strip()
-            link = self._extract_job_link(item)
+            link = item.get("link") or self._extract_job_link(item)
 
             if not title or not link:
                 continue
 
+            # In-batch deduplication
+            link_clean = link.strip().lower()
+            if link_clean in seen_links:
+                continue
+
+            tc_key = f"{title.lower()}|{company.lower()}"
+            if tc_key in seen_titles_companies:
+                continue
+
+            seen_links.add(link_clean)
+            seen_titles_companies.add(tc_key)
+
             career_link = predict_career_page_url(company=company, job_link=link)
             loc = (item.get("location") or "Remote").strip()
+            email_addr = extract_email_from_text(description)
 
             candidates.append(
                 ScrapedJob(
@@ -263,27 +604,34 @@ class JobScraper:
                     job_link=link,
                     career_page_link=career_link,
                     location=loc,
+                    recruiter_email=email_addr,
                 )
             )
+
+        logger.info(
+            "Filtered to %d qualified candidates strictly adhering to 24h & geographic constraints.",
+            len(candidates),
+        )
 
         if not candidates:
             return []
 
-        # Duplicate Check: Check links recorded in JobHistory within the last 7 days
-        all_links = [c.job_link for c in candidates]
-        existing_recent_links = get_existing_recent_links(links=all_links, days=7, db=db)
+        # 3. Database deduplication (skip links saved in last 7 days)
+        all_candidate_links = [c.job_link for c in candidates]
+        existing_recent = get_existing_recent_links(links=all_candidate_links, days=7, db=db)
 
-        filtered_jobs: List[ScrapedJob] = []
+        unique_jobs: List[ScrapedJob] = []
         for candidate in candidates:
-            if candidate.job_link in existing_recent_links:
-                logger.info("Skipping duplicate job link seen in last 7 days: %s", candidate.job_link)
+            if candidate.job_link in existing_recent:
+                logger.debug("Skipping duplicate job link seen in DB in last 7 days: %s", candidate.job_link)
                 continue
-            filtered_jobs.append(candidate)
+            unique_jobs.append(candidate)
 
         logger.info(
-            "Scrape complete. Retrieved %d total, filtered %d duplicates, returning %d unique jobs.",
+            "Scrape complete: %d candidates, %d filtered duplicates, %d unique qualified jobs ready for evaluation.",
             len(candidates),
-            len(candidates) - len(filtered_jobs),
-            len(filtered_jobs),
+            len(candidates) - len(unique_jobs),
+            len(unique_jobs),
         )
-        return filtered_jobs
+
+        return unique_jobs

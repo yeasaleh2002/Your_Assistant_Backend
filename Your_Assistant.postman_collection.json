@@ -1,14 +1,24 @@
 {
   "info": {
     "_postman_id": "9d8a34b2-2b62-4217-b714-e53f090b8fbc",
-    "name": "Your Assistant — AI Job Search Platform",
-    "description": "Comprehensive Postman collection for testing all endpoints in the 'Your Assistant' AI job search and automation backend.",
+    "name": "Your Assistant — AI Job Search & Application Tracking Platform",
+    "description": "Comprehensive Postman collection for testing all endpoints in the 'Your Assistant' AI job search, application tracking, authentication, and automation backend.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
       "value": "http://127.0.0.1:8000",
+      "type": "string"
+    },
+    {
+      "key": "targetDate",
+      "value": "2026-09-07",
+      "type": "string"
+    },
+    {
+      "key": "jwtToken",
+      "value": "",
       "type": "string"
     }
   ],
@@ -33,27 +43,124 @@
       ]
     },
     {
-      "name": "02 - Core Discovery & Workflows",
+      "name": "02 - Authentication & JWT",
       "item": [
         {
-          "name": "List & Search Jobs (Keyword + Score Filter)",
+          "name": "Admin Login & Generate JWT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.access_token) {",
+                  "    pm.collectionVariables.set('jwtToken', jsonData.access_token);",
+                  "    console.log('JWT Token saved to collection variable jwtToken');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@yourassistant.com\",\n  \"password\": \"change_this_password\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            },
+            "description": "Authenticates against ADMIN_EMAIL and ADMIN_PASSWORD configured in .env and generates a signed JWT token."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Authenticated Profile (GET /api/auth/me)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwtToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "me"]
+            },
+            "description": "Verifies Bearer JWT token and returns authenticated admin profile."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 - Application Tracking & Core Endpoints",
+      "item": [
+        {
+          "name": "Trigger Scraper & RAG Matching (POST /api/scrape)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/scrape",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "scrape"]
+            },
+            "description": "Triggers multi-source concurrent scraping for 12 hardcoded keywords, filters 24h & geography, computes RAG cosine match against data/resume.txt, and saves jobs with match_score >= 65% for today's date."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Jobs by Date (GET /api/jobs - Default Today)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/jobs?job_keyword=Engineer&min_score=75&skip=0&limit=50",
+              "raw": "{{baseUrl}}/api/jobs?skip=0&limit=50",
               "host": ["{{baseUrl}}"],
-              "path": ["jobs"],
+              "path": ["api", "jobs"],
               "query": [
                 {
-                  "key": "job_keyword",
-                  "value": "Engineer",
-                  "description": "Optional search term for title or company"
+                  "key": "skip",
+                  "value": "0",
+                  "description": "Pagination offset"
                 },
                 {
-                  "key": "min_score",
-                  "value": "75",
-                  "description": "Minimum match score threshold"
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Items per page"
+                }
+              ]
+            },
+            "description": "Retrieve stored jobs scraped on today's date, ordered by match_score descending."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Jobs for Specific Date (GET /api/jobs?date=YYYY-MM-DD)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs?date={{targetDate}}&skip=0&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs"],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "{{targetDate}}",
+                  "description": "Filter by date (YYYY-MM-DD)"
                 },
                 {
                   "key": "skip",
@@ -67,7 +174,44 @@
                 }
               ]
             },
-            "description": "Retrieve stored jobs ranked by match score with keyword filtering."
+            "description": "Retrieve stored jobs scraped on a specified date, ordered by match score descending."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Application Status (PATCH /api/jobs/{id}/status)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"Applied\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs/1/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs", "1", "status"]
+            },
+            "description": "Updates job application tracking status. Allowed values: Pending, Applied, Interview, Rejected."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Jobs by Date (DELETE /api/jobs/date/{date})",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs/date/{{targetDate}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs", "date", "{{targetDate}}"]
+            },
+            "description": "Deletes all scraped jobs for the specified date (YYYY-MM-DD)."
           },
           "response": []
         },
@@ -81,7 +225,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["generate-resume", "1"]
             },
-            "description": "Builds tailored Markdown resume and ReportLab PDF for the specified job record ID."
+            "description": "Builds tailored Markdown resume and ReportLab PDF (all black text) for the specified job record ID."
           },
           "response": []
         },
@@ -102,10 +246,10 @@
       ]
     },
     {
-      "name": "03 - Job Database Operations",
+      "name": "04 - Job Database Operations",
       "item": [
         {
-          "name": "Create Job Record Manually",
+          "name": "Create Job Record Programmatically",
           "request": {
             "method": "POST",
             "header": [
@@ -116,46 +260,50 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"title\": \"Senior AI Systems Engineer\",\n  \"company\": \"Anthropic\",\n  \"job_link\": \"https://boards.greenhouse.io/anthropic/jobs/456789\",\n  \"career_page_link\": \"https://anthropic.com/careers\",\n  \"match_score\": 91.5,\n  \"recruiter_email\": \"careers@anthropic.com\"\n}"
+              "raw": "{\n  \"title\": \"Senior Full Stack Engineer\",\n  \"company\": \"Vercel Ecosystem Partner\",\n  \"link\": \"https://example.com/careers/engineer\",\n  \"career_page_link\": \"https://example.com/careers\",\n  \"match_score\": 88.5,\n  \"location\": \"Remote\",\n  \"status\": \"Pending\",\n  \"scraped_date\": \"2026-09-07\",\n  \"recruiter_email\": \"careers@example.com\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/jobs",
               "host": ["{{baseUrl}}"],
               "path": ["api", "jobs"]
             },
-            "description": "Manually inserts a new job record with strict Pydantic input validation."
+            "description": "Programmatically inserts a new job record with strict validation."
           },
           "response": []
         },
         {
-          "name": "Query Stored Jobs (Pagination & Filter)",
+          "name": "List & Search Jobs (Legacy /jobs)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/jobs?skip=0&limit=25&min_score=80&company=Anthropic",
+              "raw": "{{baseUrl}}/jobs?job_keyword=Engineer&min_score=65&skip=0&limit=50",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "jobs"],
+              "path": ["jobs"],
               "query": [
                 {
-                  "key": "skip",
-                  "value": "0"
-                },
-                {
-                  "key": "limit",
-                  "value": "25"
+                  "key": "job_keyword",
+                  "value": "Engineer",
+                  "description": "Optional search term for title or company"
                 },
                 {
                   "key": "min_score",
-                  "value": "80"
+                  "value": "65",
+                  "description": "Minimum match score threshold"
                 },
                 {
-                  "key": "company",
-                  "value": "Anthropic"
+                  "key": "skip",
+                  "value": "0",
+                  "description": "Pagination offset"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Items per page"
                 }
               ]
             },
-            "description": "Paginated list of saved jobs with company and score filtering."
+            "description": "Retrieve stored jobs ranked by match score with keyword filtering."
           },
           "response": []
         },
@@ -183,36 +331,31 @@
       ]
     },
     {
-      "name": "04 - Scraper & Vector RAG Engine",
+      "name": "05 - Scraper & Vector RAG Testing",
       "item": [
         {
-          "name": "Trigger On-Demand SerpApi Scrape",
+          "name": "Trigger Raw SerpApi Scrape",
           "request": {
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/jobs/scrape?keyword=AI%20Engineer&limit=5",
+              "raw": "{{baseUrl}}/api/jobs/scrape?limit=10",
               "host": ["{{baseUrl}}"],
               "path": ["api", "jobs", "scrape"],
               "query": [
                 {
-                  "key": "keyword",
-                  "value": "AI Engineer",
-                  "description": "Job title or keyword"
-                },
-                {
                   "key": "limit",
-                  "value": "5",
+                  "value": "10",
                   "description": "Max results to fetch"
                 }
               ]
             },
-            "description": "Scrapes Google Jobs via SerpApi and excludes links saved within the last 7 days."
+            "description": "Scrapes raw job results applying 24h, geo, and India/Pakistan filters."
           },
           "response": []
         },
         {
-          "name": "Match Scraped Candidates via Vector RAG (>75% Filter)",
+          "name": "Match Scraped Candidates via Vector RAG (>=65% Cutoff)",
           "request": {
             "method": "POST",
             "header": [
@@ -223,30 +366,30 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "[\n  {\n    \"title\": \"Senior Python AI Engineer\",\n    \"company\": \"Scale AI\",\n    \"description\": \"Seeking a senior backend engineer proficient with FastAPI, ChromaDB, vector search, and LLM orchestration.\",\n    \"job_link\": \"https://scale.com/careers/python-ai-1\",\n    \"career_page_link\": \"https://scale.com/careers\"\n  },\n  {\n    \"title\": \"Senior Marketing Specialist\",\n    \"company\": \"Acme Corp\",\n    \"description\": \"Run SEO campaigns and social media management for B2B brand presence.\",\n    \"job_link\": \"https://acme.com/jobs/marketing-9\",\n    \"career_page_link\": \"https://acme.com/careers\"\n  }\n]"
+              "raw": "[\n  {\n    \"title\": \"Senior Python AI Engineer\",\n    \"company\": \"Scale AI\",\n    \"description\": \"FastAPI, PostgreSQL, Vector Search, LLM Agents.\",\n    \"job_link\": \"https://scale.com/careers/python-ai-1\",\n    \"career_page_link\": \"https://scale.com/careers\",\n    \"location\": \"Remote\"\n  }\n]"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/jobs/match?min_score=75",
+              "raw": "{{baseUrl}}/api/jobs/match?min_score=65",
               "host": ["{{baseUrl}}"],
               "path": ["api", "jobs", "match"],
               "query": [
                 {
                   "key": "min_score",
-                  "value": "75"
+                  "value": "65"
                 }
               ]
             },
-            "description": "Embeds candidates using local FastEmbed model and returns only jobs with cosine score > 75%."
+            "description": "Embeds candidates using local FastEmbed model and returns only jobs with cosine score >= 65%."
           },
           "response": []
         }
       ]
     },
     {
-      "name": "05 - AI & ATS Resume Builder",
+      "name": "06 - AI & ATS Resume Builder",
       "item": [
         {
-          "name": "Direct AI Text Generation (Claude 3 -> Gemini 1.5 Fallback)",
+          "name": "Direct AI Text Generation (Claude 3 -> Gemini Fallback)",
           "request": {
             "method": "POST",
             "header": [
@@ -257,7 +400,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"prompt\": \"Explain how a 24-hour autonomous background scheduler helps job seekers in two concise sentences.\",\n  \"system_prompt\": \"You are a technical career assistant.\"\n}"
+              "raw": "{\n  \"prompt\": \"Explain why 24-hour job scraping and real-time application tracking gives candidates a competitive edge in two concise sentences.\",\n  \"system_prompt\": \"You are a technical career assistant.\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/ai/generate",
@@ -310,14 +453,14 @@
               "host": ["{{baseUrl}}"],
               "path": ["api", "resume", "generate-pdf"]
             },
-            "description": "Renders tailored Markdown into a downloadable ATS-optimized PDF using ReportLab."
+            "description": "Renders tailored Markdown into a downloadable ATS-optimized PDF using ReportLab with all black text."
           },
           "response": []
         }
       ]
     },
     {
-      "name": "06 - Cold Outreach & Email",
+      "name": "07 - Cold Outreach & Email",
       "item": [
         {
           "name": "Generate Cold Outreach Email (Custom Job)",

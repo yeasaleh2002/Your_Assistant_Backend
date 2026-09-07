@@ -1,33 +1,54 @@
-# Your Assistant — Autonomous AI Job Search Platform
+# Your Assistant — Autonomous AI Job Search & Application Tracking Platform
 
-**Your Assistant** is an enterprise-grade, autonomous backend service designed to streamline the modern job search lifecycle. Built with FastAPI, SQLite/SQLAlchemy, ChromaDB vector RAG, ReportLab, and an intelligent multi-tier LLM engine, it continuously scrapes opportunities, ranks them with cosine similarity against your real resume, auto-generates 100% ATS-compliant PDFs without hallucinating fake skills, and drafts personalized cold outreach to recruiters.
+**Your Assistant** is an enterprise-grade backend service designed to automate and streamline the full job search and application lifecycle. Powered by FastAPI, SQLAlchemy with connection pooling (targeting NeonDB PostgreSQL, MySQL, and SQLite), ChromaDB vector RAG, ReportLab, and an intelligent multi-tier LLM engine, it continuously scrapes opportunities, ranks them with cosine similarity against your real resume, auto-generates 100% ATS-compliant PDFs (with strictly black text and zero hallucinated skills), tracks your application status, and secures your endpoints with JWT admin authentication.
 
 ---
 
 ## Table of Contents
 
-1. [Architecture & Workflow](#architecture--workflow)
-2. [Technology Stack](#technology-stack)
-3. [Folder Structure](#folder-structure)
-4. [Environment Setup & Installation](#environment-setup--installation)
-5. [Complete API Reference](#complete-api-reference)
-   - [Primary Application Endpoints](#primary-application-endpoints)
-     - [`GET /`](#1-get-)
-     - [`GET /jobs`](#2-get-jobs)
-     - [`POST /generate-resume/{id}`](#3-post-generate-resumeid)
-     - [`POST /generate-email/{id}`](#4-post-generate-emailid)
-   - [Modular & Programmatic Endpoints](#modular--programmatic-endpoints)
-     - [`POST /api/jobs`](#5-post-apijobs)
-     - [`GET /api/jobs`](#6-get-apijobs)
-     - [`POST /api/jobs/scrape`](#7-post-apijobsscrape)
-     - [`POST /api/jobs/match`](#8-post-apijobsmatch)
-     - [`POST /api/ai/generate`](#9-post-apiaigenerate)
-     - [`POST /api/resume/tailor`](#10-post-apiresumetailor)
-     - [`POST /api/resume/generate-pdf`](#11-post-apiresumegenerate-pdf)
-     - [`POST /api/email/generate`](#12-post-apiemailgenerate)
-     - [`POST /api/jobs/cleanup`](#13-post-apijobscleanup)
-6. [Testing with Postman](#testing-with-postman)
-7. [Automated Test Suite](#automated-test-suite)
+1. [Key Features & Highlights](#key-features--highlights)
+2. [Architecture & Workflow](#architecture--workflow)
+3. [Technology Stack](#technology-stack)
+4. [Folder Structure](#folder-structure)
+5. [Database Configuration (NeonDB PostgreSQL / MySQL / SQLite)](#database-configuration)
+6. [Scraper Rules & Filters](#scraper-rules--filters)
+7. [Environment Setup & Installation](#environment-setup--installation)
+8. [Complete API Reference](#complete-api-reference)
+   - [Authentication & Admin Endpoints](#authentication--admin-endpoints)
+     - [`POST /api/auth/login`](#1-post-apiauthlogin)
+     - [`GET /api/auth/me`](#2-get-apiauthme)
+   - [Core Application Tracking Endpoints](#core-application-tracking-endpoints)
+     - [`POST /api/scrape`](#3-post-apiscrape)
+     - [`GET /api/jobs`](#4-get-apijobs)
+     - [`PATCH /api/jobs/{job_id}/status`](#5-patch-apijobsjob_idstatus)
+     - [`DELETE /api/jobs/date/{date}`](#6-delete-apijobsdatedate)
+   - [AI Resume & Email Generation](#ai-resume--email-generation)
+     - [`POST /generate-resume/{id}`](#7-post-generate-resumeid)
+     - [`POST /generate-email/{id}`](#8-post-generate-emailid)
+   - [Legacy & Utility Endpoints](#legacy--utility-endpoints)
+     - [`GET /`](#9-get-)
+     - [`GET /jobs`](#10-get-jobs)
+     - [`POST /api/jobs/cleanup`](#11-post-apijobscleanup)
+9. [Testing with Postman](#testing-with-postman)
+10. [Automated Test Suite](#automated-test-suite)
+
+---
+
+## Key Features & Highlights
+
+- **Production Cloud SQL Database (NeonDB PostgreSQL)**: Production-ready SQLAlchemy data layer with automatic connection pooling (`pool_size=10, max_overflow=20, pool_pre_ping=True`), pre-configured to connect to free-tier cloud NeonDB PostgreSQL or local SQLite/MySQL.
+- **Admin JWT Authentication**: Secure admin login endpoint verifying against `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env`, signing bearer tokens with `JWT_SECRET` (HS256).
+- **Application Status Tracking**: Track every job record through its lifecycle using the `status` enum: `Pending`, `Applied`, `Interview`, or `Rejected`.
+- **12 Hardcoded Primary Keywords**: Scrapes software engineering roles exclusively for:
+  `"Frontend developer, Frontend Engineer, software engineer, software developer, web developer, full stack developer, react developer, next.js developer, python developer, fast api developer, vibe coder, agentic full stack development"`.
+- **Multi-Source Concurrent Scraper**: Concurrent multi-worker scraping engine targeting LinkedIn, Indeed, Glassdoor, We Work Remotely, Toptal, Wellfound, Remote.co, Bdjobs, and Google Search. Targets a daily yield of 50–60+ opportunities.
+- **Strict 24-Hour Recency**: Only accepts postings published in the last 24 hours.
+- **Geographic Policy & Strict Country Exclusion**:
+  - **Bangladesh (BD)**: Accepts any job type (On-site, Hybrid, or Remote).
+  - **Outside Bangladesh**: Strictly requires **Remote** / Work-from-Home.
+  - **India & Pakistan**: **STRICTLY EXCLUDED** (all regions, cities, and domains).
+- **RAG Cosine Evaluation (>= 65% Cutoff)**: Uses local FastEmbed ONNX vectors (`BAAI/bge-small-en-v1.5`) in ChromaDB to score each job against your base resume (`data/resume.txt`). Only jobs with $\ge 65.0\%$ match score are saved.
+- **ATS Resume Generator (Strictly Black Text)**: Prompts Claude / Gemini to tailor resume content with zero hallucination. Renders clean, modern PDFs via ReportLab with 100% black text (`#000000`) for maximum ATS scanner compatibility.
 
 ---
 
@@ -35,65 +56,59 @@
 
 ```mermaid
 flowchart TD
-    subgraph Daily Background Worker [Daily 24-Hour Autonomous Scheduler]
-        A[SerpApi Google Jobs Scraper] -->|7-Day Deduplication Check| B[Candidate Job Postings]
-        B --> C[ChromaDB + FastEmbed Vector RAG Engine]
-        R[Static Base Resume data/resume.txt] --> C
-        C -->|Match Score > 75% Cutoff| D[(SQLAlchemy SQLite JobHistory)]
-        D -->|Auto-Retention Cleanup| E[Delete Records Older than 7 Days]
+    subgraph AuthLayer [Admin Security Layer]
+        AdminCreds[ADMIN_EMAIL & ADMIN_PASSWORD in .env] --> LoginEndpoint[POST /api/auth/login]
+        LoginEndpoint -->|HMAC Timing-Safe Verification| IssueJWT[Issue JWT Signed with JWT_SECRET]
+        IssueJWT --> BearerToken[Authorization: Bearer Token]
+        BearerToken --> ProtectedRoute[GET /api/auth/me]
     end
 
-    subgraph FastAPI Ingestion & Bot Defense [Secure Gateway]
-        Client[Client / Postman / Frontend] -->|SlowAPI IP Throttling| F[FastAPI Application]
-        F --> G[GET /jobs?job_keyword=...]
-        F --> H[POST /generate-resume/{id}]
-        F --> I[POST /generate-email/{id}]
+    subgraph ScraperEngine [Concurrent Multi-Source Scraper]
+        KW[12 Hardcoded Keywords] --> WorkerPool[Concurrent ThreadPoolExecutor]
+        WorkerPool --> S1[SerpApi Google Jobs]
+        WorkerPool --> S2[LinkedIn / Indeed / Glassdoor / Bdjobs]
+        WorkerPool --> S3[We Work Remotely Feed]
+        WorkerPool --> S4[Remote.co Feed]
+        S1 & S2 & S3 & S4 --> Filter24h{Posted in Last 24 Hours?}
+        Filter24h -->|No| Discard1[Discard]
+        Filter24h -->|Yes| FilterGeo{Geo Check: Exclude IN/PK, BD Any, Outside Remote?}
+        FilterGeo -->|No| Discard2[Discard]
+        FilterGeo -->|Yes| Dedupe[7-Day DB Deduplication]
     end
 
-    subgraph Resilient Multi-LLM Engine [Cascading Provider & Key Rotation]
-        H --> L[LLM Manager]
-        I --> L
-        L --> M{Claude 3 Key 1}
-        M -->|429 / 529 Rate Limit| N{Claude 3 Key 2}
-        N -->|All Claude Keys Fail| O{Gemini 1.5 Key 1}
-        O -->|429 Rate Limit| P{Gemini 1.5 Key 2}
-        P -->|All Providers Exhausted| Q[Raise AllProvidersExhaustedError 503]
+    subgraph RAGMatching [ChromaDB Vector Evaluation]
+        Dedupe --> RAG[FastEmbed bge-small ONNX]
+        Resume[data/resume.txt] --> RAG
+        RAG --> Cutoff{Match Score >= 65%?}
+        Cutoff -->|No| Discard3[Discard]
+        Cutoff -->|Yes| SaveDB[(SQL Database: NeonDB PostgreSQL)]
     end
 
-    H --> S[ReportLab ATS Engine]
-    S --> T[Instant ATS-Friendly PDF Download]
+    subgraph AppTracking [Application Tracking & Workflows]
+        SaveDB --> EndpointGet[GET /api/jobs?date=YYYY-MM-DD]
+        SaveDB --> EndpointPatch[PATCH /api/jobs/{id}/status]
+        SaveDB --> EndpointDel[DELETE /api/jobs/date/{date}]
+        SaveDB --> GenResume[POST /generate-resume/{id}]
+        SaveDB --> GenEmail[POST /generate-email/{id}]
+    end
 ```
-
-### Core Innovations & Guarantees
-1. **Zero-Hallucination ATS Resume Builder**: Strictly prompts the LLM:
-   > *"Rewrite the resume for 100% ATS compatibility. You MUST ONLY use skills and experiences present in the original resume. DO NOT hallucinate or add any fake skills."*
-2. **Local Vector RAG Engine**: Embeds job descriptions locally using `BAAI/bge-small-en-v1.5` on CPU with ChromaDB. Filters with a hard cutoff ($\text{Score} > 75\%$) to eliminate wasted LLM API tokens.
-3. **Multi-Tier Fallback System**: Auto-rotates keys on Anthropic Claude 3 (`claude-3-5-sonnet` / `claude-3-haiku`), cascading to Google Gemini 1.5 (`gemini-1.5-flash` / `gemini-1.5-pro`) during rate limits.
-4. **Automated Background Scheduler & Pruning**: Built-in `AsyncIOScheduler` runs every 24 hours to scrape, match, persist, and auto-delete jobs older than 7 days.
-5. **Strict Rate Limiting & Malicious Input Defense**: `slowapi` IP-based limits protect all endpoints, while Pydantic `extra="forbid"` models reject unknown/injected parameters.
 
 ---
 
 ## Technology Stack
 
-| Layer / Concern | Technology | Version | Purpose |
-|---|---|---|---|
-| **Web Framework** | [FastAPI](https://fastapi.tiangolo.com/) | `>= 0.115.0` | Asynchronous REST API framework, OpenAPI/Swagger generation, dependency injection. |
-| **ASGI Server** | [Uvicorn](https://www.uvicorn.org/) | `>= 0.30.0` | High-speed production ASGI server with reload support. |
-| **Database ORM** | [SQLAlchemy](https://www.sqlalchemy.org/) | `>= 2.0.30` | Modern Python SQL toolkit & ORM managing SQLite persistence with connection pooling. |
-| **Database Engine** | SQLite 3 | Built-in | Zero-configuration relational database engine storing `JobHistory` records. |
-| **Data Validation** | [Pydantic](https://docs.pydantic.dev/) | `>= 2.8.0` | Strict data parsing, URL/Email validation, and `extra="forbid"` payload protection. |
-| **Rate Limiting** | [SlowAPI](https://slowapi.readthedocs.io/) | `>= 0.1.9` | Client IP-based rate limiting to prevent bot attacks and API abuse. |
-| **Cron / Scheduler** | [APScheduler](https://apscheduler.readthedocs.io/) | `>= 3.10.4` | In-process background scheduler for autonomous 24-hour scraping and 7-day retention cleanup. |
-| **Vector Database** | [ChromaDB](https://www.trychroma.com/) | `>= 0.5.0` | Local persistent vector database indexing jobs with HNSW cosine distance (`hnsw:space="cosine"`). |
-| **Embeddings** | [FastEmbed](https://qdrant.github.io/fastembed/) | `>= 0.3.0` | Lightweight, CPU-optimized embedding generation using `BAAI/bge-small-en-v1.5` (384-dimensional dense vectors). |
-| **PDF Generation** | [ReportLab](https://www.reportlab.com/) | `>= 4.0.0` | Pure Python programmatic ATS-optimized PDF generation (no external binaries like `wkhtmltopdf`). |
-| **HTTP Client** | [Requests](https://requests.readthedocs.io/) | `>= 2.31.0` | Synchronous HTTP client for SerpApi scraping and LLM API endpoints. |
-| **Type Stubs** | [types-requests](https://github.com/python/typeshed) | `>= 2.31.0` | PEP 561 static type stubs for Pyrefly / Pyright type checking. |
-| **Primary LLM** | Anthropic Claude 3 | API | Primary reasoning provider (`claude-3-5-sonnet`, `claude-3-haiku`) with multi-key rotation. |
-| **Fallback LLM** | Google Gemini 1.5 | API | High-speed secondary fallback provider (`gemini-1.5-flash`, `gemini-1.5-pro`). |
-| **Job Search Engine**| [SerpApi](https://serpapi.com/) | API | Google Jobs scraping engine with structured employer metadata extraction. |
-| **Testing** | [Pytest](https://docs.pytest.org/) | `>= 8.0.0` | Automated testing framework with 35 test suites verifying end-to-end functionality. |
+| Component | Technology | Description |
+|---|---|---|
+| **Web Framework** | FastAPI `>= 0.115.0` | Asynchronous REST API framework with OpenAPI documentation |
+| **Authentication** | PyJWT `>= 2.8.0` | Secure JWT token issuance and cryptographic verification |
+| **Database ORM** | SQLAlchemy `>= 2.0.30` | Production SQL ORM with connection pooling & dialect translation |
+| **Database Driver** | psycopg2-binary `>= 2.9.9` | High-performance C-based PostgreSQL driver |
+| **Cloud Database** | NeonDB PostgreSQL | Serverless PostgreSQL cloud database with SSL & pooling |
+| **Vector Engine** | ChromaDB `>= 0.5.0` | Local persistent vector storage with cosine distance metric |
+| **Embeddings** | FastEmbed `>= 0.3.0` | CPU-optimized `BAAI/bge-small-en-v1.5` dense embeddings |
+| **PDF Generator** | ReportLab `>= 4.0.0` | Programmatic ATS-friendly PDF compiler (100% black text) |
+| **Rate Limiter** | SlowAPI `>= 0.1.9` | IP-based request throttling |
+| **Scheduler** | APScheduler `>= 3.10.4` | Background 24-hour scraper & retention cron |
 
 ---
 
@@ -103,30 +118,32 @@ flowchart TD
 Your_Assistant/
 ├── app/
 │   ├── __init__.py               # Package initializer with dynamic runtime compatibility shim
-│   ├── database.py               # SQLAlchemy engine, SessionLocal, get_db, and 7-day retention cleanup
-│   ├── models.py                 # JobHistory SQLAlchemy model and strict Pydantic schemas
+│   ├── auth.py                   # JWT admin authentication, password verification, token dependencies
+│   ├── database.py               # SQLAlchemy engine (Neon PostgreSQL/MySQL/SQLite), connection pooling
+│   ├── models.py                 # Job SQLAlchemy ORM model, JobStatus enum, Pydantic schemas
 │   ├── schemas.py                # Schema aliases and re-exports
-│   ├── scraper.py                # SerpApi Google Jobs scraper, career portal predictor, 7-day duplicate check
-│   ├── rag_engine.py             # ChromaDB persistent vector engine, FastEmbed model, >75% cosine filter
-│   ├── llm_manager.py            # Multi-key rotation, Claude 3 -> Gemini 1.5 cascading fallback engine
-│   ├── resume_builder.py         # ATS resume tailoring (anti-hallucination prompt) & ReportLab PDF generator
-│   ├── email_generator.py        # Recruiter contact email extraction (regex/fallback) & cold outreach JSON generator
-│   └── main.py                   # FastAPI application, SlowAPI rate limiter, connected endpoints & APScheduler cron
+│   ├── scraper.py                # 12 hardcoded keywords, concurrent fetchers, 24h & geo filters
+│   ├── rag_engine.py             # ChromaDB vector RAG engine, FastEmbed model, >=65% cosine cutoff
+│   ├── llm_manager.py            # Multi-key rotation, Claude 3 -> Gemini cascading fallback engine
+│   ├── resume_builder.py         # ATS resume tailoring (anti-hallucination) & ReportLab PDF generator (black text)
+│   ├── email_generator.py        # Recruiter contact email extraction & cold outreach JSON generator
+│   └── main.py                   # FastAPI app, SlowAPI limiter, connected endpoints & APScheduler cron
 ├── data/
 │   └── resume.txt                # Static user base resume profile text used for vector matching
 ├── output/                       # Output directory where generated tailored resume PDFs are stored
-├── typings/
-│   └── requests/                 # Local type stub definitions ensuring strict static analyzer compliance
 ├── tests/
+│   ├── test_auth.py              # Admin verification, JWT encoding/decoding, /api/auth/me tests
 │   ├── test_backend.py           # Rate limiting, strict validation, and automated 7-day retention cleanup tests
-│   ├── test_scraper.py           # Query generation, SerpApi scraping, career URL predictor, and duplicate tests
-│   ├── test_rag_engine.py        # FastEmbed dense vectors, ChromaDB storage, and >75% score cutoff tests
-│   ├── test_llm_manager.py       # Claude 3 key rotation, Gemini 1.5 fallback, and error handling tests
+│   ├── test_scraper.py           # Query generation, SerpApi scraping, career URL predictor, duplicate tests
+│   ├── test_sql_and_scraper_upgrade.py # 24h filter, India/Pakistan exclusion, BD geo rules, status PATCH, delete by date
+│   ├── test_rag_engine.py        # FastEmbed dense vectors, ChromaDB storage, and >=65% score cutoff tests
+│   ├── test_llm_manager.py       # Claude 3 key rotation, Gemini fallback, and error handling tests
 │   ├── test_resume_builder.py    # Strict ATS prompt constraint, Markdown formatting, and PDF generation tests
 │   ├── test_email_generator.py   # Recruiter regex extraction, fallback email, and cold email JSON tests
 │   └── test_main_integration.py  # End-to-end tests for /jobs, /generate-resume/{id}, and daily background cron
-├── .env.example                  # Template configuration for Claude keys, Gemini keys, and SerpApi
-├── pyproject.toml                # Static type checking (Pyrefly) and project tool configuration
+├── .env                          # Active environment configuration (API keys, NeonDB, JWT secret)
+├── .env.example                  # Template configuration file
+├── pyproject.toml                # Static type checking and project tool configuration
 ├── requirements.txt              # Production dependency specifications
 ├── Your_Assistant.postman_collection.json # Complete Postman Collection for testing all endpoints
 └── README.md                     # Comprehensive architecture and API documentation
@@ -134,427 +151,332 @@ Your_Assistant/
 
 ---
 
+## Database Configuration
+
+### 1. NeonDB PostgreSQL (Configured in `.env`)
+```ini
+DATABASE_URL=postgresql://neondb_owner:npg_iX8Hz1qwmyxS@ep-ancient-art-ap0suate.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+```
+
+### 2. MySQL
+```ini
+DATABASE_URL=mysql+pymysql://user:password@localhost:3306/your_assistant_db
+```
+
+### 3. SQLite (Local Offline Development)
+```ini
+DATABASE_URL=sqlite:///./jobs.db
+```
+
+### Database Model: `jobs` Table
+| Column | Type | Description |
+|---|---|---|
+| `id` | `INTEGER` (PK) | Auto-incrementing primary key |
+| `title` | `VARCHAR(255)` | Job title |
+| `company` | `VARCHAR(255)` | Employer / company name |
+| `link` | `TEXT` | Direct job application URL (also accessed via `job_link`) |
+| `match_score` | `FLOAT` | Semantic similarity score against resume ($0.0 - 100.0$) |
+| `location` | `VARCHAR(255)` | Job location or Remote status |
+| `status` | `VARCHAR(50)` | Status enum: `Pending`, `Applied`, `Interview`, `Rejected` |
+| `scraped_date` | `DATE` | Date scraped (`YYYY-MM-DD`) |
+| `description` | `TEXT` | Job posting snippet or description |
+| `recruiter_email`| `VARCHAR(255)` | Extracted recruiter contact email |
+| `career_page_link`| `TEXT` | Predicted company career portal |
+| `created_at` | `TIMESTAMP` | Record creation timestamp |
+
+---
+
+## Scraper Rules & Filters
+
+1. **Keywords**:
+   - `Frontend developer`, `Frontend Engineer`, `software engineer`, `software developer`, `web developer`, `full stack developer`, `react developer`, `next.js developer`, `python developer`, `fast api developer`, `vibe coder`, `agentic full stack development`.
+2. **24-Hour Recency**:
+   - Inspects metadata for `"hour"`, `"minute"`, `"today"`, `"1 day ago"`, or publication timestamps $\le 24$ hours.
+3. **Geographic Policy**:
+   - **Bangladesh**: Any type allowed (On-site, Hybrid, Remote).
+   - **Outside Bangladesh**: MUST be Remote / Work From Home.
+   - **India & Pakistan**: STRICTLY EXCLUDED across all locations, regions, and domains (`.in`, `.pk`).
+4. **RAG Match**:
+   - Evaluates against `data/resume.txt`. Cutoff threshold is strictly $\ge 65.0\%$.
+
+---
+
 ## Environment Setup & Installation
 
-### 1. Prerequisites
-- Python 3.10, 3.11, 3.12, or 3.13 installed.
-- (Optional) Git for version control.
-
-### 2. Install Dependencies
+### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configure `.env` File
-Copy `.env.example` to `.env`:
-```bash
-cp .env.example .env
-```
-Edit `.env` with your API keys:
+### 2. Configure `.env`
 ```ini
-# Comma-separated API keys for rotation & fallback
+# Multi-LLM API Keys
 CLAUDE_KEYS=sk-ant-api03-key1,sk-ant-api03-key2
 GEMINI_KEYS=AIzaSyKey1,AIzaSyKey2
 
-# SerpApi Key for automated job scraping
+# SerpApi Key
 SERPAPI_API_KEY=your_serpapi_api_key_here
 
-# Database URL (defaults to sqlite:///./jobs.db)
-DATABASE_URL=sqlite:///./jobs.db
+# Database Connection (NeonDB PostgreSQL)
+DATABASE_URL=postgresql://neondb_owner:password@ep-ancient-art.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
 
-# ChromaDB persistence directory
+# ChromaDB Storage
 CHROMA_DB_PATH=./chroma_db
+
+# Admin Authentication & JWT Secret
+JWT_SECRET=080c28897f0a23ca02c407685998fc1c6e8197d3997510ba1d49d7f994f628ad
+ADMIN_EMAIL=admin@yourassistant.com
+ADMIN_PASSWORD=change_this_password
 ```
 
-### 4. Provide Your Base Resume
-Ensure your genuine, factual resume is placed in `data/resume.txt`. The RAG engine reads this file to compute cosine similarity against scraped job postings and enforces the anti-hallucination constraint.
+### 3. Provide Base Resume
+Place your factual resume at `data/resume.txt`.
 
-### 5. Launch the Application
+### 4. Run Server
 ```bash
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
-Interactive docs will be available at:
-- **Swagger UI**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- **ReDoc**: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
+Interactive docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 ---
 
 ## Complete API Reference
 
----
+### Authentication & Admin Endpoints
 
-### Primary Application Endpoints
-
-#### 1. `GET /`
-**Health Check & Easter Egg**
-- **Description**: Verifies service liveness and confirms the `import antigravity` easter egg is active.
-- **Rate Limit**: `30 requests/minute`
-- **Request Headers**: None required
-- **Query Parameters**: None
-- **Request Body**: None
+#### 1. `POST /api/auth/login`
+**Admin Login & Token Generation**
+- **Description**: Verifies credentials against `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env`, returning a signed JWT token signed with `JWT_SECRET`.
+- **Rate Limit**: `15 requests/minute`
+- **Request Body**:
+```json
+{
+  "email": "admin@yourassistant.com",
+  "password": "change_this_password"
+}
+```
 
 **Response `200 OK`**:
 ```json
 {
-  "service": "Your Assistant - Automated AI Job Search Backend",
-  "status": "healthy",
-  "version": "1.0.0",
-  "easter_egg": "antigravity active"
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "expires_in_days": 7,
+  "user": {
+    "email": "admin@yourassistant.com",
+    "role": "admin"
+  }
 }
 ```
 
 ---
 
-#### 2. `GET /jobs`
-**Search & Filter Discovered Jobs**
-- **Description**: Retrieves stored job opportunities ranked by `match_score` descending. Supports optional keyword search across job titles and companies.
+#### 2. `GET /api/auth/me`
+**Get Current Authenticated User**
+- **Description**: Validates active JWT access token passed in `Authorization: Bearer <token>` header.
+- **Rate Limit**: `60 requests/minute`
+
+**Response `200 OK`**:
+```json
+{
+  "email": "admin@yourassistant.com",
+  "role": "admin",
+  "authenticated": true
+}
+```
+
+---
+
+### Core Application Tracking Endpoints
+
+#### 3. `POST /api/scrape`
+**Trigger Scraper & RAG Evaluation Pipeline**
+- **Description**: Concurrently scrapes jobs across the 12 primary keywords, enforces 24h & geo rules, scores against `data/resume.txt`, and persists matches ($\ge 65\%$) for today's date.
+- **Rate Limit**: `10 requests/minute`
+- **Request Body**: None
+
+**Response `200 OK`**:
+```json
+{
+  "status": "success",
+  "scraped_count": 58,
+  "matched_count": 14,
+  "saved_count": 14,
+  "scraped_date": "2026-09-07",
+  "message": "Successfully scraped 58 candidates, matched 14 (>= 65%), and saved 14 new jobs for 2026-09-07."
+}
+```
+
+---
+
+#### 4. `GET /api/jobs`
+**Retrieve Stored Jobs by Date**
+- **Description**: Returns jobs scraped for a given date, ranked by `match_score` descending. Defaults to today's date if `date` is omitted.
 - **Rate Limit**: `60 requests/minute`
 - **Query Parameters**:
   | Parameter | Type | Required | Default | Description |
   |---|---|---|---|---|
-  | `job_keyword` | `string` | No | `null` | Keyword to search in job title or company name (e.g. `Python`, `AI`) |
-  | `min_score` | `float` | No | `null` | Minimum match score threshold ($0.0 - 100.0$) |
+  | `date` | `string` (`YYYY-MM-DD`) | No | `today` | Date filter (e.g. `2026-09-07`) |
   | `skip` | `integer` | No | `0` | Pagination offset |
-  | `limit` | `integer` | No | `50` | Maximum results to return ($\le 100$) |
-- **Request Body**: None
+  | `limit` | `integer` | No | `100` | Max items to return ($\le 200$) |
 
 **Response `200 OK`**:
 ```json
 [
   {
     "id": 1,
-    "title": "Senior AI Systems Engineer",
-    "company": "Anthropic",
-    "job_link": "https://boards.greenhouse.io/anthropic/jobs/12345",
-    "career_page_link": "https://anthropic.com/careers",
-    "match_score": 89.42,
-    "recruiter_email": "careers@anthropic.com",
-    "created_at": "2026-09-07T08:00:00Z"
+    "title": "Senior Frontend Engineer",
+    "company": "Vercel Partner",
+    "link": "https://example.com/careers/fe-engineer",
+    "match_score": 88.5,
+    "location": "Remote",
+    "status": "Pending",
+    "scraped_date": "2026-09-07",
+    "description": "Building scalable React & Next.js applications...",
+    "recruiter_email": "recruiting@example.com",
+    "career_page_link": "https://example.com/careers",
+    "created_at": "2026-09-07T14:30:00Z"
   }
 ]
 ```
 
 ---
 
-#### 3. `POST /generate-resume/{id}`
-**Generate Tailored ATS Resume & PDF for Job**
-- **Description**: Loads the stored job matching `{id}`, applies the strict zero-hallucination constraint against the user's real resume, tailors the resume in Markdown, and renders a publication-ready PDF using ReportLab.
-- **Rate Limit**: `10 requests/minute`
-- **Path Parameters**:
-  | Parameter | Type | Required | Description |
-  |---|---|---|---|
-  | `id` | `integer` | Yes | Target `JobHistory` record ID |
-- **Request Body**: None
+#### 5. `PATCH /api/jobs/{job_id}/status`
+**Update Application Tracking Status**
+- **Description**: Updates the application status for a specific job.
+- **Rate Limit**: `30 requests/minute`
+- **Request Body**:
+```json
+{
+  "status": "Applied"
+}
+```
+*Allowed values*: `"Pending"`, `"Applied"`, `"Interview"`, `"Rejected"`
+
+**Response `200 OK`**:
+```json
+{
+  "id": 1,
+  "title": "Senior Frontend Engineer",
+  "company": "Vercel Partner",
+  "link": "https://example.com/careers/fe-engineer",
+  "match_score": 88.5,
+  "location": "Remote",
+  "status": "Applied",
+  "scraped_date": "2026-09-07"
+}
+```
+
+---
+
+#### 6. `DELETE /api/jobs/date/{date}`
+**Delete All Jobs Scraped on a Date**
+- **Description**: Deletes all scraped jobs recorded for the specified date (`YYYY-MM-DD`).
+- **Rate Limit**: `15 requests/minute`
+
+**Response `200 OK`**:
+```json
+{
+  "status": "success",
+  "date": "2026-09-07",
+  "deleted_count": 14,
+  "message": "Successfully deleted 14 jobs scraped on 2026-09-07."
+}
+```
+
+---
+
+### AI Resume & Email Generation
+
+#### 7. `POST /generate-resume/{id}`
+**Generate ATS-Friendly Resume & PDF**
+- **Description**: Tailors your genuine resume for the specified job posting without hallucinating skills. Renders an ATS-safe ReportLab PDF with 100% black text (`#000000`).
+- **Rate Limit**: `15 requests/minute`
 
 **Response `200 OK`**:
 ```json
 {
   "status": "success",
   "job_id": 1,
-  "job_title": "Senior AI Systems Engineer",
-  "company": "Anthropic",
-  "match_score": 89.42,
-  "tailored_resume_markdown": "# Alex Rivera\n**AI Systems Engineer** | alex.rivera@example.com\n\n## PROFESSIONAL SUMMARY\n...",
-  "pdf_filename": "resume_Anthropic_1.pdf",
-  "pdf_path": "output/resume_Anthropic_1.pdf"
-}
-```
-
-**Response `404 Not Found`**:
-```json
-{
-  "detail": "Job record with ID 999 does not exist."
+  "job_title": "Senior Frontend Engineer",
+  "company": "Vercel Partner",
+  "match_score": 88.5,
+  "tailored_resume_markdown": "# Yeasaleh\n**Senior Frontend Engineer**...",
+  "pdf_filename": "Resume_Vercel_Partner_Senior_Frontend_Engineer.pdf",
+  "pdf_path": "output/Resume_Vercel_Partner_Senior_Frontend_Engineer.pdf"
 }
 ```
 
 ---
 
-#### 4. `POST /generate-email/{id}`
+#### 8. `POST /generate-email/{id}`
 **Generate Personalized Cold Outreach Email**
-- **Description**: Extracts recruiter contact information from the stored job record, generates an engaging subject line, and drafts a concise, personalized cold email highlighting matched real skills.
-- **Rate Limit**: `15 requests/minute`
-- **Path Parameters**:
-  | Parameter | Type | Required | Description |
-  |---|---|---|---|
-  | `id` | `integer` | Yes | Target `JobHistory` record ID |
-- **Request Body**: None
-
-**Response `200 OK`**:
-```json
-{
-  "email": "careers@anthropic.com",
-  "subject": "Senior AI Systems Engineer - Alex Rivera | Python & RAG Infrastructure",
-  "body": "Hi Anthropic Recruiting Team,\n\nI noticed your opening for a Senior AI Systems Engineer..."
-}
-```
-
----
-
-### Modular & Programmatic Endpoints
-
-#### 5. `POST /api/jobs`
-**Manually Record Job Opportunity**
-- **Description**: Stores a discovered job opportunity with strict input sanitization. Rejects unknown properties (`extra="forbid"`) to prevent payload injections.
+- **Description**: Resolves recruiter contact information and crafts a personalized, professional cold email.
 - **Rate Limit**: `20 requests/minute`
-- **Request Body (`application/json`)**:
-```json
-{
-  "title": "Machine Learning Engineer",
-  "company": "Google DeepMind",
-  "job_link": "https://deepmind.google/careers/ml-eng-456",
-  "career_page_link": "https://deepmind.google/careers",
-  "match_score": 92.5,
-  "recruiter_email": "recruiting@deepmind.com"
-}
-```
-
-**Response `201 Created`**:
-```json
-{
-  "id": 2,
-  "title": "Machine Learning Engineer",
-  "company": "Google DeepMind",
-  "job_link": "https://deepmind.google/careers/ml-eng-456",
-  "career_page_link": "https://deepmind.google/careers",
-  "match_score": 92.5,
-  "recruiter_email": "recruiting@deepmind.com",
-  "created_at": "2026-09-07T08:15:00Z"
-}
-```
-
-**Response `422 Unprocessable Entity`**: If payload contains unknown fields, invalid URLs, or unverified email formatting.
-
----
-
-#### 6. `GET /api/jobs`
-**Paginated Query of Job Matches**
-- **Description**: Paginated retrieval of job records with optional filtering by minimum match score and company name.
-- **Rate Limit**: `60 requests/minute`
-- **Query Parameters**:
-  | Parameter | Type | Default | Description |
-  |---|---|---|---|
-  | `skip` | `integer` | `0` | Offset for pagination |
-  | `limit` | `integer` | `50` | Maximum items to return ($\le 100$) |
-  | `min_score` | `float` | `null` | Filter by minimum match score |
-  | `company` | `string` | `null` | Filter by employer company name |
-
-**Response `200 OK`**: List of `JobHistoryResponse` objects.
-
----
-
-#### 7. `POST /api/jobs/scrape`
-**On-Demand Job Scraping via SerpApi**
-- **Description**: Scrapes Google Jobs via SerpApi. Prioritizes `keyword` if provided, otherwise falls back to `"Software Engineer remote"`. Predicts employer career portals and automatically omits any job URLs saved within the last 7 days.
-- **Rate Limit**: `10 requests/minute`
-- **Query Parameters**:
-  | Parameter | Type | Default | Description |
-  |---|---|---|---|
-  | `keyword` | `string` | `null` | Target job title keyword |
-  | `limit` | `integer` | `10` | Maximum jobs to fetch ($1 - 50$) |
-
-**Response `200 OK`**:
-```json
-[
-  {
-    "title": "Backend Software Engineer",
-    "company": "Stripe",
-    "description": "We are looking for an experienced backend engineer to scale global payment APIs...",
-    "job_link": "https://stripe.com/jobs/backend-engineer-789",
-    "career_page_link": "https://stripe.com/careers"
-  }
-]
-```
-
----
-
-#### 8. `POST /api/jobs/match`
-**Vector RAG Match Evaluation**
-- **Description**: Takes a raw list of scraped jobs, computes dense embeddings using FastEmbed (`BAAI/bge-small-en-v1.5`), performs cosine similarity search against the user's resume in ChromaDB, and returns **only jobs strictly exceeding the cutoff score** (default: `> 75%`).
-- **Rate Limit**: `10 requests/minute`
-- **Query Parameters**:
-  | Parameter | Type | Default | Description |
-  |---|---|---|---|
-  | `min_score` | `float` | `75.0` | Minimum match percentage threshold ($0.0 - 100.0$) |
-- **Request Body (`application/json`)**:
-```json
-[
-  {
-    "title": "Python Distributed Systems Engineer",
-    "company": "Snowflake",
-    "description": "Build high-throughput distributed database query engines with Python and C++.",
-    "job_link": "https://snowflake.com/jobs/dist-sys-101",
-    "career_page_link": "https://snowflake.com/careers"
-  }
-]
-```
-
-**Response `200 OK`**:
-```json
-[
-  {
-    "title": "Python Distributed Systems Engineer",
-    "company": "Snowflake",
-    "description": "Build high-throughput distributed database query engines with Python and C++.",
-    "job_link": "https://snowflake.com/jobs/dist-sys-101",
-    "career_page_link": "https://snowflake.com/careers",
-    "match_score": 83.15,
-    "recruiter_email": null
-  }
-]
-```
-
----
-
-#### 9. `POST /api/ai/generate`
-**Direct Multi-Tier AI Generation**
-- **Description**: Unified text generation using multi-key rotation and multi-provider fallback: Claude 3 (Key 1 -> Key 2) cascading to Gemini 1.5 (Key 1 -> Key 2).
-- **Rate Limit**: `15 requests/minute`
-- **Request Body (`application/json`)**:
-```json
-{
-  "prompt": "Draft a 2-sentence elevator pitch for a Senior Python Developer with FastAPI and RAG expertise.",
-  "system_prompt": "You are an executive tech career coach."
-}
-```
 
 **Response `200 OK`**:
 ```json
 {
-  "status": "success",
-  "response": "With deep expertise in architecting asynchronous Python services using FastAPI and local vector RAG pipelines, I build production AI backends that operate with ultra-low latency and zero downtime. My work focuses on scalable system design, robust rate limiting, and high-precision retrieval systems."
-}
-```
-
-**Response `503 Service Unavailable`**: If all Claude and Gemini keys are exhausted.
-
----
-
-#### 10. `POST /api/resume/tailor`
-**Tailor Resume Markdown (No Fake Skills)**
-- **Description**: Tailors resume Markdown specifically aligned to a job description while strictly prohibiting skill hallucination.
-- **Rate Limit**: `10 requests/minute`
-- **Request Body (`application/json`)**:
-```json
-{
-  "job_title": "AI Backend Architect",
-  "job_description": "Seeking an engineer with strong FastAPI, ChromaDB, and LLM fallback architecture experience.",
-  "company": "Cohere",
-  "base_resume_text": null
-}
-```
-
-**Response `200 OK`**:
-```json
-{
-  "status": "success",
-  "job_title": "AI Backend Architect",
-  "company": "Cohere",
-  "tailored_resume_markdown": "# Candidate Name\n**AI Backend Architect**\n\n## SUMMARY\n..."
+  "email": "careers@example.com",
+  "subject": "Senior Frontend Engineer - Application & Overview",
+  "body": "Hi Team,\n\nI came across the Senior Frontend Engineer opening at Vercel Partner..."
 }
 ```
 
 ---
 
-#### 11. `POST /api/resume/generate-pdf`
-**Convert Markdown Resume to ATS PDF**
-- **Description**: Compiles customized Markdown resume text into a publication-quality, ATS-optimized PDF and returns it as a direct file download.
-- **Rate Limit**: `10 requests/minute`
-- **Request Body (`application/json`)**:
-```json
-{
-  "markdown_text": "# Alex Rivera\n**AI Systems Engineer** | alex.rivera@example.com\n\n## PROFESSIONAL SUMMARY\nBackend engineer specialized in FastAPI, ChromaDB, and Python.",
-  "filename": "alex_rivera_resume.pdf"
-}
-```
+### Legacy & Utility Endpoints
 
-**Response `200 OK`**:
-- **Content-Type**: `application/pdf`
-- **Content-Disposition**: `attachment; filename="alex_rivera_resume.pdf"`
-- **Body**: Binary PDF file.
+#### 9. `GET /`
+Returns service status and the Antigravity active easter egg.
 
----
+#### 10. `GET /jobs`
+Legacy job search supporting keyword (`job_keyword`) and minimum score (`min_score`) filters.
 
-#### 12. `POST /api/email/generate`
-**Arbitrary Cold Email Generation**
-- **Description**: Generates a high-impact recruiter cold email for arbitrary job descriptions without needing a pre-existing database record.
-- **Rate Limit**: `15 requests/minute`
-- **Request Body (`application/json`)**:
-```json
-{
-  "job_title": "Senior Data Platform Engineer",
-  "job_description": "We are seeking a senior engineer to scale streaming data pipelines. Contact hiring-lead@databricks.com for questions.",
-  "company": "Databricks",
-  "recruiter_email": null,
-  "base_resume_text": null
-}
-```
-
-**Response `200 OK`**:
-```json
-{
-  "email": "hiring-lead@databricks.com",
-  "subject": "Senior Data Platform Engineer - Alex Rivera | Distributed Systems Specialist",
-  "body": "Dear Databricks Team,\n\nI was excited to see your opening for a Senior Data Platform Engineer..."
-}
-```
-
----
-
-#### 13. `POST /api/jobs/cleanup`
-**Trigger Retention Cleanup**
-- **Description**: Manually runs the data retention worker to delete jobs older than `retention_days` (default: 7 days).
-- **Rate Limit**: `5 requests/minute`
-- **Query Parameters**:
-  | Parameter | Type | Default | Description |
-  |---|---|---|---|
-  | `retention_days` | `integer` | `7` | Retention threshold in days ($1 - 365$) |
-- **Request Body**: None
-
-**Response `200 OK`**:
-```json
-{
-  "status": "success",
-  "retention_days": 7,
-  "records_deleted": 14
-}
-```
+#### 11. `POST /api/jobs/cleanup?retention_days=7`
+Manually triggers 7-day data retention pruning.
 
 ---
 
 ## Testing with Postman
 
-A complete, production-ready Postman collection is included in the root directory:
-[`Your_Assistant.postman_collection.json`](file:///d:/Nurix_Hive/Your_Assistant/Your_Assistant.postman_collection.json)
+A pre-configured Postman Collection is included in the root directory:
+**`Your_Assistant.postman_collection.json`**
 
-### How to Import & Use:
-1. Open **Postman**.
-2. Click **Import** in the top-left corner.
-3. Select `Your_Assistant.postman_collection.json`.
-4. The collection defines a collection variable:
-   - `baseUrl`: `http://127.0.0.1:8000` (modify if hosting on a remote server).
-5. All 13 endpoints are organized into logical folders:
-   - **01 - Health & Easter Egg**
-   - **02 - Main Discovery & Generation**
-   - **03 - Job Database Operations**
-   - **04 - Scraper & RAG Engine**
-   - **05 - AI & ATS Resume Builder**
-   - **06 - Cold Outreach & Email**
-6. Each request includes pre-configured headers (`Content-Type: application/json`), realistic sample payloads, and automated test scripts to verify `responseCode.code === 200` or `201`.
+### Postman Test Flow:
+1. **01 - Health & System**: Verify service liveness.
+2. **02 - Authentication & JWT**:
+   - Send `Admin Login & Generate JWT`.
+   - The test script automatically saves the `access_token` into the `{{jwtToken}}` collection variable!
+   - Send `Get Authenticated Profile` to test the token.
+3. **03 - Application Tracking & Core Endpoints**:
+   - `POST /api/scrape`
+   - `GET /api/jobs` (default today)
+   - `GET /api/jobs?date={{targetDate}}`
+   - `PATCH /api/jobs/1/status`
+   - `DELETE /api/jobs/date/{{targetDate}}`
+   - `POST /generate-resume/1`
+   - `POST /generate-email/1`
+4. **04 - Job Database Operations**: Manual job creation & retention cleanup.
+5. **05 - Scraper & Vector RAG Testing**: Raw scrape & threshold testing.
+6. **06 - AI & ATS Resume Builder**: Tailored markdown & PDF compilation.
+7. **07 - Cold Outreach & Email**: Customized cold email draft generation.
 
 ---
 
 ## Automated Test Suite
 
-Run the full test suite using `pytest`:
+Run the full automated test suite (46 comprehensive tests):
 ```bash
-python -m pytest -v
+pytest -v
 ```
 
-### Test Coverage Highlights (35 / 35 Passing Tests)
-- `tests/test_backend.py`: Antigravity easter egg, `JobHistory` CRUD, SlowAPI rate limiting (`429`), strict Pydantic payload validation, and automated 7-day database cleanup.
-- `tests/test_scraper.py`: Keyword query building, default fallback query, career portal URL prediction, 7-day duplicate filtering, and scraping endpoint integration.
-- `tests/test_rag_engine.py`: FastEmbed BGE dense vector generation, ChromaDB cosine space persistence, resume loading, and strict $> 75\%$ score threshold cutoff.
-- `tests/test_llm_manager.py`: Multi-key loading from `.env`, Claude 3 key rotation on 429 errors, Claude-to-Gemini cascading fallback, and unified `generate_ai_response()`.
-- `tests/test_resume_builder.py`: Strict anti-hallucination prompt enforcement, Markdown sanitization, ReportLab PDF rendering, and `/api/resume/*` endpoints.
-- `tests/test_email_generator.py`: Regex recruiter email extraction, `[Recruiter Email]` fallback handling, structured JSON formatting, and `/api/email/*` endpoints.
-- `tests/test_main_integration.py`: End-to-end integration across `/jobs`, `/generate-resume/{id}`, `/generate-email/{id}`, and the 24-hour background scheduler pipeline.
+Tests cover:
+- Admin login and JWT authentication (`tests/test_auth.py`).
+- NeonDB PostgreSQL and SQLAlchemy dialect handling, schema validation, and status transitions.
+- Multi-source scraper 24h filter and India/Pakistan rejection.
+- Geographic constraints (Bangladesh any type, outside Bangladesh remote only).
+- RAG cosine similarity scoring and $\ge 65\%$ cutoff.
+- ATS PDF generation (100% black text formatting).
+- Cascading Multi-LLM provider fallback and key rotation.

@@ -1,5 +1,6 @@
 import antigravity  # Easter Egg: Elevating Python & AI job searches into orbit!
 
+from datetime import date, datetime, timezone
 import importlib
 import logging
 import os
@@ -27,13 +28,39 @@ RateLimitExceeded = _slowapi_errors.RateLimitExceeded
 SlowAPIMiddleware = _slowapi_middleware.SlowAPIMiddleware
 get_remote_address = _slowapi_util.get_remote_address
 
-from app.database import Base, Session, SessionLocal, delete_records_older_than, engine, get_db
+from app.auth import (
+    LoginRequest,
+    TokenResponse,
+    UserProfile,
+    create_access_token,
+    require_authenticated_user,
+    verify_admin_credentials,
+)
+from app.database import (
+    Base,
+    Session,
+    SessionLocal,
+    delete_jobs_by_date,
+    delete_records_older_than,
+    engine,
+    get_db,
+)
 from app.email_generator import EmailDraft, EmailGenerator
 from app.llm_manager import AllProvidersExhaustedError, generate_ai_response
-from app.models import JobHistory, JobHistoryCreate, JobHistoryResponse
+from app.models import (
+    Job,
+    JobCreate,
+    JobHistory,
+    JobHistoryCreate,
+    JobHistoryResponse,
+    JobResponse,
+    JobStatus,
+    JobStatusEnum,
+    JobUpdateStatus,
+)
 from app.rag_engine import MatchedJob, RAGEngine
 from app.resume_builder import ResumeBuilder
-from app.scraper import JobScraper, ScrapedJob
+from app.scraper import PRIMARY_KEYWORDS, JobScraper, ScrapedJob
 
 # Setup structured logging
 logging.basicConfig(
@@ -45,7 +72,7 @@ logger = logging.getLogger("your_assistant")
 # Rate Limiter Configuration (Strict per-IP throttling to mitigate bot scraping and brute-force attacks)
 limiter = Limiter(
     key_func=get_remote_address,
-    default_limits=["60/minute"],
+    default_limits=["120/minute"],
     headers_enabled=False,
 )
 
@@ -53,11 +80,10 @@ limiter = Limiter(
 def run_daily_job_search_pipeline(job_keyword: Optional[str] = None) -> Dict[str, Any]:
     """
     Automated background pipeline executed daily:
-    1. Scrapes job listings via SerpApi Google Jobs.
-    2. Runs ChromaDB + FastEmbed vector RAG engine against the base resume.
-    3. Filters candidate jobs exceeding > 75% match score.
-    4. Automatically records newly discovered high-match opportunities into JobHistory.
-    5. Cleans up stale records older than 7 days.
+    1. Scrapes job listings via concurrent multi-source scraper (12 primary keywords).
+    2. Runs ChromaDB + FastEmbed vector RAG engine against base resume (cutoff >= 65%).
+    3. Persists qualified opportunities into Job table with scraped_date = date.today().
+    4. Cleans up stale records older than 7 days.
     """
     logger.info("Executing scheduled daily automated job search & RAG pipeline...")
     db = SessionLocal()
@@ -66,32 +92,40 @@ def run_daily_job_search_pipeline(job_keyword: Optional[str] = None) -> Dict[str
         rag = RAGEngine()
 
         # Step 1: Scrape jobs (with 7-day duplicate exclusion)
-        scraped_candidates = scraper.scrape_jobs(job_keyword=job_keyword, limit=20, db=db)
+        scraped_candidates = scraper.scrape_jobs(job_keyword=job_keyword, limit=60, db=db)
         logger.info("Scraper discovered %d unique candidates.", len(scraped_candidates))
 
         if not scraped_candidates:
             pruned = delete_records_older_than(days=7, db=db)
             return {"scraped": 0, "matched": 0, "saved": 0, "pruned": pruned}
 
-        # Step 2: Vector RAG matching against resume
-        matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=75.0)
-        logger.info("RAG Engine qualified %d jobs exceeding >75%% match score.", len(matched_jobs))
+        # Step 2: Vector RAG matching against resume (cutoff >= 65%)
+        matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=65.0)
+        logger.info("RAG Engine qualified %d jobs exceeding >=65%% match score.", len(matched_jobs))
 
         # Step 3: Persist matched opportunities
+        today = date.today()
         saved_count = 0
         for m in matched_jobs:
-            db_entry = JobHistory(
-                title=m.title,
-                company=m.company,
-                job_link=m.job_link,
-                career_page_link=m.career_page_link,
-                match_score=m.match_score,
-                recruiter_email=None,
-                description=m.description,
-                location=getattr(m, "location", "Remote") or "Remote",
-            )
-            db.add(db_entry)
-            saved_count += 1
+            existing = db.query(Job).filter(Job.link == m.job_link).first()
+            if not existing:
+                db_entry = Job(
+                    title=m.title,
+                    company=m.company,
+                    link=m.job_link,
+                    career_page_link=m.career_page_link,
+                    match_score=m.match_score,
+                    recruiter_email=getattr(m, "recruiter_email", None),
+                    description=m.description,
+                    location=getattr(m, "location", "Remote") or "Remote",
+                    status=JobStatus.Pending,
+                    scraped_date=today,
+                )
+                db.add(db_entry)
+                saved_count += 1
+            else:
+                existing.match_score = m.match_score
+                existing.scraped_date = today
 
         db.commit()
         logger.info("Persisted %d high-match opportunities into database.", saved_count)
@@ -167,10 +201,10 @@ app = FastAPI(
     title="Your Assistant - Automated AI Job Search",
     description=(
         "Production-grade backend service powering automated AI job searching, "
-        "recruiter discovery, ChromaDB vector RAG matching, resilient Multi-LLM "
-        "fallback, and ATS-optimized resume/email generation."
+        "recruiter discovery, ChromaDB vector RAG matching, SQL application tracking, "
+        "and ATS-optimized resume/email generation."
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -179,22 +213,22 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-# CORS Protection
+# CORS Protection (supports GET, POST, PATCH, PUT, DELETE, OPTIONS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
 
 # ==============================================================================
-# Primary Application Endpoints
+# Health Endpoint
 # ==============================================================================
 
 @app.get("/", tags=["Health"])
-@limiter.limit("30/minute")
+@limiter.limit("60/minute")
 async def health_check(request: Request):
     """
     Health check & assistant status endpoint.
@@ -203,41 +237,165 @@ async def health_check(request: Request):
     return {
         "service": "Your Assistant - Automated AI Job Search Backend",
         "status": "healthy",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "easter_egg": "antigravity active",
     }
 
 
+# ==============================================================================
+# Authentication & JWT Endpoints
+# ==============================================================================
+
+@app.post(
+    "/api/auth/login",
+    response_model=TokenResponse,
+    tags=["Authentication"],
+)
+@limiter.limit("15/minute")
+async def login_admin(
+    request: Request,
+    payload: LoginRequest,
+):
+    """
+    Authenticate admin credentials configured in .env (ADMIN_EMAIL, ADMIN_PASSWORD)
+    and issue a signed JWT access token.
+    """
+    if not verify_admin_credentials(payload.email, payload.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(
+        data={"sub": payload.email, "role": "admin"}
+    )
+    return TokenResponse(
+        access_token=access_token,
+        token_type="bearer",
+        user={"email": payload.email, "role": "admin"},
+    )
+
+
 @app.get(
-    "/jobs",
-    response_model=List[JobHistoryResponse],
-    tags=["Job Search"],
+    "/api/auth/me",
+    response_model=UserProfile,
+    tags=["Authentication"],
 )
 @limiter.limit("60/minute")
-async def get_jobs(
+async def get_current_user_profile(
     request: Request,
-    job_keyword: Optional[str] = Query(None, description="Optional keyword to filter job title or company"),
-    min_score: Optional[float] = Query(None, ge=0.0, le=100.0, description="Optional minimum match score"),
-    skip: int = Query(0, ge=0, description="Pagination offset"),
-    limit: int = Query(50, ge=1, le=100, description="Items per page (max 100)"),
+    user_data: Dict[str, Any] = Depends(require_authenticated_user),
+):
+    """
+    Validate active JWT access token and return current authenticated user profile.
+    """
+    return UserProfile(
+        email=user_data.get("sub", "admin"),
+        role=user_data.get("role", "admin"),
+        authenticated=True,
+    )
+
+
+# ==============================================================================
+# Application Tracking & Core Job Endpoints
+# ==============================================================================
+
+@app.post(
+    "/api/scrape",
+    tags=["Job Scraper & Matching"],
+)
+@limiter.limit("10/minute")
+async def trigger_scrape_and_match(
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
-    Retrieve stored job opportunities.
-    Supports optional `job_keyword` search across title and company,
-    and returns matches ranked by match score descending.
+    Triggers the concurrent multi-source job scraper (12 hardcoded primary keywords),
+    evaluates candidates against the user's base resume (data/resume.txt) via ChromaDB RAG,
+    and ONLY saves jobs with match_score >= 65% for today's date.
     """
-    query = db.query(JobHistory)
+    scraper = JobScraper()
+    rag = RAGEngine()
 
-    if job_keyword and job_keyword.strip():
-        kw = f"%{job_keyword.strip()}%"
-        query = query.filter(or_(JobHistory.title.ilike(kw), JobHistory.company.ilike(kw)))
+    # 1. Fetch raw candidates
+    scraped_candidates = scraper.scrape_jobs(limit=60, db=db)
+    logger.info("Scraper fetched %d candidates adhering to 24h & geo rules.", len(scraped_candidates))
 
-    if min_score is not None:
-        query = query.filter(JobHistory.match_score >= min_score)
+    if not scraped_candidates:
+        return {
+            "status": "success",
+            "scraped_count": 0,
+            "matched_count": 0,
+            "saved_count": 0,
+            "message": "No new unique jobs discovered matching 24-hour and geographic filters.",
+        }
 
+    # 2. Vector RAG evaluation (Strict cutoff >= 65%)
+    matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=65.0)
+    logger.info("RAG Engine qualified %d jobs exceeding >=65%% threshold.", len(matched_jobs))
+
+    today = date.today()
+    saved_count = 0
+    for m in matched_jobs:
+        existing = db.query(Job).filter(Job.link == m.job_link).first()
+        if not existing:
+            new_job = Job(
+                title=m.title,
+                company=m.company,
+                link=m.job_link,
+                career_page_link=m.career_page_link,
+                match_score=m.match_score,
+                recruiter_email=getattr(m, "recruiter_email", None),
+                description=m.description,
+                location=getattr(m, "location", "Remote") or "Remote",
+                status=JobStatus.Pending,
+                scraped_date=today,
+            )
+            db.add(new_job)
+            saved_count += 1
+        else:
+            existing.match_score = m.match_score
+            existing.scraped_date = today
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "scraped_count": len(scraped_candidates),
+        "matched_count": len(matched_jobs),
+        "saved_count": saved_count,
+        "scraped_date": today.isoformat(),
+        "message": f"Successfully scraped {len(scraped_candidates)} candidates, matched {len(matched_jobs)} (>= 65%), and saved {saved_count} new jobs for {today}.",
+    }
+
+
+@app.get(
+    "/api/jobs",
+    response_model=List[JobResponse],
+    tags=["Job Search"],
+)
+@limiter.limit("60/minute")
+async def get_jobs_by_date(
+    request: Request,
+    date_filter: Optional[date] = Query(
+        None,
+        alias="date",
+        description="Filter jobs by scraped date (YYYY-MM-DD). Defaults to today's date if omitted.",
+    ),
+    skip: int = Query(0, ge=0, description="Pagination offset"),
+    limit: int = Query(100, ge=1, le=200, description="Maximum jobs to return"),
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve stored job opportunities for a specific date (defaults to today).
+    Returns jobs ranked by match score descending.
+    """
+    target_date = date_filter or date.today()
     jobs = (
-        query.order_by(JobHistory.match_score.desc(), JobHistory.created_at.desc())
+        db.query(Job)
+        .filter(Job.scraped_date == target_date)
+        .order_by(Job.match_score.desc(), Job.id.desc())
         .offset(skip)
         .limit(limit)
         .all()
@@ -245,11 +403,66 @@ async def get_jobs(
     return jobs
 
 
+@app.patch(
+    "/api/jobs/{job_id}/status",
+    response_model=JobResponse,
+    tags=["Application Tracking"],
+)
+@limiter.limit("30/minute")
+async def update_job_status(
+    request: Request,
+    job_id: int,
+    payload: JobUpdateStatus,
+    db: Session = Depends(get_db),
+):
+    """
+    Update the application tracking status for a job (Pending, Applied, Interview, Rejected).
+    """
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job record with ID {job_id} does not exist.",
+        )
+
+    job.status = JobStatus(payload.status.value)
+    db.commit()
+    db.refresh(job)
+    logger.info("Updated Job ID %d status to '%s'", job_id, job.status.value)
+    return job
+
+
+@app.delete(
+    "/api/jobs/date/{target_date}",
+    tags=["Job Search"],
+)
+@limiter.limit("15/minute")
+async def delete_jobs_for_date(
+    request: Request,
+    target_date: date,
+    db: Session = Depends(get_db),
+):
+    """
+    Delete all scraped jobs for the specified date (YYYY-MM-DD).
+    """
+    deleted_count = delete_jobs_by_date(target_date=target_date, db=db)
+    return {
+        "status": "success",
+        "date": target_date.isoformat(),
+        "deleted_count": deleted_count,
+        "message": f"Successfully deleted {deleted_count} jobs scraped on {target_date.isoformat()}.",
+    }
+
+
+# ==============================================================================
+# Resume and Email Generation Endpoints
+# ==============================================================================
+
 @app.post(
     "/generate-resume/{id}",
     tags=["Resume Builder"],
 )
-@limiter.limit("10/minute")
+@limiter.limit("15/minute")
 async def generate_resume_for_job(
     request: Request,
     id: int,
@@ -257,9 +470,9 @@ async def generate_resume_for_job(
 ):
     """
     Generate an ATS-optimized, tailored resume and downloadable PDF for a specific stored job record.
-    Enforces the strict anti-hallucination constraint.
+    Enforces strict black text styling and anti-hallucination constraint.
     """
-    job = db.query(JobHistory).filter(JobHistory.id == id).first()
+    job = db.query(Job).filter(Job.id == id).first()
     if not job:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -270,7 +483,7 @@ async def generate_resume_for_job(
     job_desc = (
         job.description
         if job.description and len(job.description.strip()) > 15
-        else f"Opportunity: {job.title} at {job.company}. Job Link: {job.job_link}"
+        else f"Opportunity: {job.title} at {job.company}. Job Link: {job.link}"
     )
 
     try:
@@ -302,7 +515,7 @@ async def generate_resume_for_job(
     response_model=EmailDraft,
     tags=["Cold Email Generator"],
 )
-@limiter.limit("15/minute")
+@limiter.limit("20/minute")
 async def generate_email_for_job(
     request: Request,
     id: int,
@@ -310,9 +523,8 @@ async def generate_email_for_job(
 ):
     """
     Extract recruiter contact information and generate a personalized cold email for a specific stored job record.
-    Emphasizes real skills from the candidate's resume.
     """
-    job = db.query(JobHistory).filter(JobHistory.id == id).first()
+    job = db.query(Job).filter(Job.id == id).first()
     if not job:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -323,7 +535,7 @@ async def generate_email_for_job(
     job_desc = (
         job.description
         if job.description and len(job.description.strip()) > 15
-        else f"{job.title} at {job.company}. Job Link: {job.job_link}"
+        else f"{job.title} at {job.company}. Job Link: {job.link}"
     )
 
     try:
@@ -349,140 +561,75 @@ async def generate_email_for_job(
 
 
 # ==============================================================================
-# Modular API Endpoints (Programmatic & Testing Sub-Routes)
+# Backward Compatibility & Utility Endpoints
 # ==============================================================================
 
-
-
-@app.post(
-    "/api/jobs/live-search",
-    response_model=List[JobHistoryResponse],
-    tags=["Job Search"],
+@app.get(
+    "/jobs",
+    response_model=List[JobResponse],
+    tags=["Job Search (Legacy)"],
 )
-@limiter.limit("20/minute")
-async def live_search_and_match(
+@limiter.limit("60/minute")
+async def get_jobs_legacy(
     request: Request,
-    keyword: Optional[str] = Query(None, description="Job title, skill or keyword (e.g. Next.js, Frontend, Python)"),
-    limit: int = Query(15, ge=1, le=50, description="Max jobs to scrape and evaluate"),
-    min_score: float = Query(45.0, ge=0.0, le=100.0, description="Minimum match cutoff percentage"),
+    job_keyword: Optional[str] = Query(None, description="Optional keyword to filter job title or company"),
+    min_score: Optional[float] = Query(None, ge=0.0, le=100.0, description="Optional minimum match score"),
+    date_filter: Optional[date] = Query(None, alias="date", description="Filter by scraped date (YYYY-MM-DD)"),
+    skip: int = Query(0, ge=0, description="Pagination offset"),
+    limit: int = Query(50, ge=1, le=100, description="Items per page (max 100)"),
     db: Session = Depends(get_db),
 ):
-    """
-    Dynamic Live Job Radar:
-    1. Scrapes real-world positions from SerpApi Google Jobs.
-    2. Runs vector semantic comparison against the user's active resume (ChromaDB + FastEmbed).
-    3. Persists qualified opportunities into SQLite.
-    4. Returns real-time ranked openings.
-    """
-    scraper = JobScraper()
-    rag = RAGEngine()
+    """Retrieve stored job opportunities with optional keyword, date, and score filtering."""
+    query = db.query(Job)
 
-    search_kw = keyword.strip() if keyword and keyword.strip() else None
-    logger.info("Executing on-demand live job search with keyword: %s", search_kw)
+    if date_filter:
+        query = query.filter(Job.scraped_date == date_filter)
 
-    scraped_candidates = scraper.scrape_jobs(job_keyword=search_kw, limit=limit, db=db)
-    logger.info("Live search scraped %d candidate jobs", len(scraped_candidates))
+    if job_keyword and job_keyword.strip():
+        kw = f"%{job_keyword.strip()}%"
+        query = query.filter(or_(Job.title.ilike(kw), Job.company.ilike(kw)))
 
-    if not scraped_candidates:
-        # Fallback to existing saved jobs matching query
-        query = db.query(JobHistory)
-        if search_kw:
-            kw = f"%{search_kw}%"
-            query = query.filter(or_(JobHistory.title.ilike(kw), JobHistory.company.ilike(kw)))
-        return query.order_by(JobHistory.match_score.desc()).limit(limit).all()
+    if min_score is not None:
+        query = query.filter(Job.match_score >= min_score)
 
-    matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=min_score)
-    logger.info("Vector RAG matched %d jobs exceeding %0.1f%% threshold", len(matched_jobs), min_score)
+    jobs = (
+        query.order_by(Job.match_score.desc(), Job.scraped_date.desc(), Job.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return jobs
 
-    results = []
-    for m in matched_jobs:
-        existing_job = db.query(JobHistory).filter(JobHistory.job_link == m.job_link).first()
-        if not existing_job:
-            loc = getattr(m, "location", None) or "Remote"
-            desc_l = (m.description or "").lower()
-            if loc == "Remote":
-                if "hybrid" in desc_l:
-                    loc = "Hybrid"
-                elif "on-site" in desc_l or "onsite" in desc_l:
-                    loc = "On-site"
-
-            new_job = JobHistory(
-                title=m.title,
-                company=m.company,
-                job_link=m.job_link,
-                career_page_link=m.career_page_link,
-                match_score=m.match_score,
-                description=m.description,
-                location=loc,
-                recruiter_email=None,
-            )
-            db.add(new_job)
-            db.commit()
-            db.refresh(new_job)
-            results.append(new_job)
-        else:
-            existing_job.match_score = m.match_score
-            if m.description and not existing_job.description:
-                existing_job.description = m.description
-            db.commit()
-            results.append(existing_job)
-
-    results.sort(key=lambda x: x.match_score, reverse=True)
-    return results
 
 @app.post(
     "/api/jobs",
-    response_model=JobHistoryResponse,
+    response_model=JobResponse,
     status_code=status.HTTP_201_CREATED,
-    tags=["Job History"],
+    tags=["Job Search"],
 )
-@limiter.limit("20/minute")
-async def create_job_history(
+@limiter.limit("30/minute")
+async def create_job_endpoint(
     request: Request,
-    job_in: JobHistoryCreate,
+    job_in: JobCreate,
     db: Session = Depends(get_db),
 ):
-    """Record a new job opportunity discovered by the AI search agent."""
-    db_job = JobHistory(
+    """Record a new job opportunity programmatically."""
+    db_job = Job(
         title=job_in.title,
         company=job_in.company,
-        job_link=str(job_in.job_link),
+        link=str(job_in.link),
         career_page_link=str(job_in.career_page_link) if job_in.career_page_link else None,
         match_score=job_in.match_score,
         recruiter_email=str(job_in.recruiter_email) if job_in.recruiter_email else None,
         description=job_in.description,
         location=job_in.location or "Remote",
+        status=JobStatus(job_in.status.value),
+        scraped_date=job_in.scraped_date or date.today(),
     )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
     return db_job
-
-
-@app.get(
-    "/api/jobs",
-    response_model=List[JobHistoryResponse],
-    tags=["Job History"],
-)
-@limiter.limit("60/minute")
-async def list_job_history(
-    request: Request,
-    skip: int = Query(0, ge=0, description="Offset for pagination"),
-    limit: int = Query(50, ge=1, le=100, description="Limit per page (max 100)"),
-    min_score: Optional[float] = Query(None, ge=0.0, le=100.0, description="Filter by minimum match score"),
-    company: Optional[str] = Query(None, min_length=1, max_length=100, description="Filter by company"),
-    db: Session = Depends(get_db),
-):
-    """Retrieve stored job search matches with pagination and filtering."""
-    query = db.query(JobHistory)
-
-    if min_score is not None:
-        query = query.filter(JobHistory.match_score >= min_score)
-    if company:
-        query = query.filter(JobHistory.company.ilike(f"%{company}%"))
-
-    jobs = query.order_by(JobHistory.created_at.desc()).offset(skip).limit(limit).all()
-    return jobs
 
 
 @app.post(
@@ -491,13 +638,13 @@ async def list_job_history(
     tags=["Scraper"],
 )
 @limiter.limit("10/minute")
-async def trigger_job_scrape(
+async def trigger_job_scrape_raw(
     request: Request,
-    keyword: Optional[str] = Query(None, description="Optional job title/keyword. Falls back to 'Software Engineer remote'."),
+    keyword: Optional[str] = Query(None, description="Keyword"),
     limit: int = Query(10, ge=1, le=50, description="Max jobs to fetch"),
     db: Session = Depends(get_db),
 ):
-    """Scrape job opportunities via SerpApi Google Jobs."""
+    """Scrape raw job opportunities."""
     scraper = JobScraper()
     jobs = scraper.scrape_jobs(job_keyword=keyword, limit=limit, db=db)
     return jobs
@@ -509,12 +656,12 @@ async def trigger_job_scrape(
     tags=["RAG Engine"],
 )
 @limiter.limit("10/minute")
-async def match_scraped_jobs(
+async def match_scraped_jobs_endpoint(
     request: Request,
     jobs: List[ScrapedJob],
-    min_score: float = Query(75.0, ge=0.0, le=100.0, description="Minimum match score percentage cutoff"),
+    min_score: float = Query(65.0, ge=0.0, le=100.0, description="Minimum match score percentage cutoff"),
 ):
-    """Vector RAG matching returning only jobs exceeding the match threshold (> 75%)."""
+    """Vector RAG matching returning only jobs exceeding the match threshold (>= 65%)."""
     rag = RAGEngine()
     matched = rag.match_jobs(jobs, min_match_score=min_score)
     return matched
@@ -529,12 +676,12 @@ class GenerateAIRequest(BaseModel):
     "/api/ai/generate",
     tags=["AI Generation"],
 )
-@limiter.limit("15/minute")
+@limiter.limit("20/minute")
 async def generate_ai(
     request: Request,
     payload: GenerateAIRequest,
 ):
-    """Generate AI text using multi-tier fallback: Claude 3 (Key 1 -> 2) -> Gemini 1.5 (Key 1 -> 2)."""
+    """Generate AI text using multi-tier fallback: Claude 3 -> Gemini."""
     try:
         response_text = generate_ai_response(
             prompt=payload.prompt,
@@ -562,7 +709,7 @@ class TailorResumeRequest(BaseModel):
     "/api/resume/tailor",
     tags=["Resume Builder"],
 )
-@limiter.limit("10/minute")
+@limiter.limit("15/minute")
 async def tailor_resume_endpoint(
     request: Request,
     payload: TailorResumeRequest,
@@ -598,7 +745,7 @@ class GenerateResumePDFRequest(BaseModel):
     "/api/resume/generate-pdf",
     tags=["Resume Builder"],
 )
-@limiter.limit("10/minute")
+@limiter.limit("15/minute")
 async def generate_resume_pdf_endpoint(
     request: Request,
     payload: GenerateResumePDFRequest,
@@ -635,7 +782,7 @@ class GenerateEmailRequest(BaseModel):
     response_model=EmailDraft,
     tags=["Cold Email Generator"],
 )
-@limiter.limit("15/minute")
+@limiter.limit("20/minute")
 async def generate_email_endpoint(
     request: Request,
     payload: GenerateEmailRequest,
