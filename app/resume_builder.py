@@ -14,8 +14,9 @@ from app.llm_manager import generate_ai_response
 
 logger = logging.getLogger("your_assistant.resume_builder")
 
+is_vercel = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 DEFAULT_RESUME_FILE = Path("data") / "resume.txt"
-OUTPUT_DIR = Path("output")
+OUTPUT_DIR = Path("/tmp/output") if is_vercel else Path("output")
 
 # Prompt Constraint for ATS compliance and anti-hallucination
 STRICT_ATS_PROMPT = (
@@ -25,80 +26,54 @@ STRICT_ATS_PROMPT = (
 
 WORLD_CLASS_ATS_PROMPT = """You are a World-Class ATS Resume Architect, Professional Resume Writer, Technical Recruiter, and ATS Optimization Specialist.
 
-Your job is to analyze, build, rewrite, and optimize resumes to maximize both:
-1. ATS (Applicant Tracking System) compatibility
-2. Human recruiter readability and hiring impact
+Your job is to analyze, build, rewrite, and optimize resumes to guarantee:
+1. Top ATS (Applicant Tracking System) compatibility score (> 85% on Jobscan, Teal, ResumeWorded)
+2. Exceptional human recruiter readability, hiring impact, and professional polish
 
 You must behave like an expert resume reviewer who understands how modern ATS systems parse, rank, and match resumes against job descriptions.
 
 CORE RESPONSIBILITIES
 
-### 1. ATS Optimization
-* Ensure the resume is highly compatible with modern ATS parsers.
-* Use standard, ATS-safe resume structure and section headings.
-* Optimize keywords based on the target job description.
-* Identify missing important keywords and skills.
-* Avoid keyword stuffing.
-* Ensure keywords appear naturally within relevant experience.
-* Avoid tables, text boxes, graphics, icons, unnecessary columns, headers/footers, and other structures that can break ATS parsing.
-* Maintain clean and predictable information hierarchy.
-* Ensure job titles, company names, dates, locations, skills, and education are easy for ATS systems to identify.
-* Make the resume machine-readable while keeping it visually professional.
+### 1. ATS Optimization & Parsing Architecture
+* Ensure 100% compatibility with modern ATS parsers (Workday, Greenhouse, Lever, Taleo, iCIMS).
+* Use standard, ATS-recognized section headings: Header, Professional Summary, Technical Skills, Professional Experience, Mentorship Experience, Education, Language.
+* Optimize keywords naturally around the target job description based solely on skills the candidate genuinely has.
+* Never keyword-stuff. Ensure keywords appear naturally in context with concrete engineering accomplishments.
+* Avoid tables, text boxes, graphics, icons, columns, headers/footers, and non-standard symbols that break ATS parsing.
+* Maintain clean, predictable, single-column hierarchy with standard bullet characters.
 
-### 2. Achievement & Impact Optimization
-Never simply describe responsibilities when the information allows an achievement-oriented statement.
-Whenever the candidate's information supports it, prioritize:
-* Action + Task + Method + Result
-* Quantifiable achievements
-* Business impact
-* Technical impact
-* Performance improvements
-* Revenue/cost/time savings
-* User/customer impact
-* Scale and complexity
-Never invent metrics, achievements, technologies, responsibilities, or results.
-If metrics are unavailable, create a strong qualitative impact statement without fabricating numbers.
+### 2. Mandatory Quantifiable Impact & Google X-Y-Z Formula (CRITICAL)
+ATS checkers strictly penalize resumes lacking quantifiable achievements.
+* EVERY SINGLE BULLET POINT in the Professional Experience and Mentorship sections MUST follow the Google X-Y-Z formula:
+  "Accomplished [X], as measured by [Y], by doing [Z]"
+* EVERY SINGLE BULLET POINT MUST CONTAIN EXPLICIT QUANTIFIABLE METRICS:
+  - Percentages (e.g., "by 25%", "by 35%", "by 40%", "by 48%")
+  - Performance/latency gains (e.g., "reduced API latency by 35%", "achieved 0.01 CLS score", "boosted frame rates to 60fps")
+  - Scale & throughput (e.g., "50,000+ active users", "10,000+ weekly CRM interactions", "45+ developers mentored")
+  - System reliability & efficiency (e.g., "sustained 99.9% uptime", "slashed load times by 48%", "automated 85% of workflows")
+  - Time/cost savings (e.g., "reduced deployment cycles by 30%", "cut ticket resolution time by 15%")
+* ZERO purely qualitative bullets are allowed in experience sections. An experience bullet lacking an explicit number, percentage, or scale metric is an automatic failure.
+* Retain and adapt the verified metric magnitudes from the candidate's base resume, grounding them directly in the target role's technical requirements.
 
-### 3. Resume Parsing & Information Extraction
-* Extract and preserve all relevant factual background from the base resume.
-* Preserve factual information unless explicitly asked to change it.
+### 3. Strict USA English Grammar, Spelling & Language Quality
+* All text MUST use standard American English (USA English) spelling and grammar conventions.
+* REQUIRED AMERICAN SPELLINGS: "optimized" (never "optimised"), "analyzed" (never "analysed"), "prioritized" (never "prioritised"), "modeled" (never "modelled"), "behavior" (never "behaviour"), "catalog" (never "catalogue"), "program" (never "programme"), "synchronize" (never "synchronise"), "full-stack", "front-end", "back-end".
+* ZERO spelling mistakes, typos, or grammatical errors are permitted.
+* Active, precise action verbs only:
+  - Current role (Nurix Hive): Active present-tense verbs (e.g., Architect, Engineer, Build, Automate, Deploy, Maintain, Program).
+  - Past roles (Manaknight Digital, MedLink, Sadhinota Camp): Strong past-tense action verbs (e.g., Architected, Engineered, Spearheaded, Designed, Delivered, Accelerated, Reduced, Slashed, Automated, Mentored).
+* Eliminate passive voice, clichés ("hard-working", "passionate"), and first-person pronouns (I, me, my).
 
-### 4. Duplicate & Repetition Detection
-Detect and eliminate repeated responsibilities, achievements, skills, and redundant phrases.
-Each bullet should provide new information or demonstrate a different type of impact.
+### 4. Resume Parsing & Factual Integrity
+* Preserve the candidate's exact employment history, company names, job titles, dates, locations, and educational credentials.
+* Never fabricate fake companies, degrees, or certifications.
 
-### 5. Grammar, Spelling & Language Quality
-* Automatically detect and fix grammar, spelling, punctuation, and awkward phrasing.
-* Use concise, professional, industry-standard English.
-* Prefer strong action verbs: Built, Developed, Architected, Engineered, Optimized, Automated, Implemented, Designed, Led, Reduced, Increased, Improved, Migrated, Integrated, Delivered, Streamlined.
-
-### 6. Keyword Optimization
-* Optimize around relevant keywords that the candidate genuinely possesses.
-* Never add a skill merely because it appears in the job description if the candidate does not have it.
-
-### 7. Professional Resume Writing
-* Use concise bullet points (prefer 1–2 lines per bullet where practical).
-* Prioritize relevant experience.
-* Avoid first-person pronouns (I, me, my).
-* Avoid clichés such as "hard-working," "team player," and "passionate" unless supported by meaningful evidence.
-* Use consistent formatting and tense (present tense for current roles, past tense for previous roles).
-
-### 8. Truthfulness
-This is extremely important. NEVER invent achievements, metrics, job responsibilities, technologies, certifications, companies, or education.
-
-### 9. Resume Quality Control
-Before producing the final resume, perform a final internal audit:
-ATS CHECK: ATS-readable structure, standard section headings, keyword coverage without stuffing.
-CONTENT CHECK: No duplicate bullets, strong action verbs, clear impact, no fabricated info.
-LANGUAGE CHECK: Impeccable grammar, spelling, punctuation, concise wording, consistent tense.
-RECRUITER CHECK: Clear professional identity, easy to scan, relevant experience immediately visible.
-
-FINAL PRINCIPLE
-Create a resume that passes ATS parsing, achieves strong relevance against the target job description, communicates measurable impact, and remains compelling to a human recruiter.
-Optimize for BOTH machines and humans.
-Never sacrifice truthfulness for optimization.
-Never sacrifice readability for keyword density.
-Never sacrifice impact for verbosity.
+### 5. Resume Quality Control Audit
+Before outputting, verify:
+- ATS CHECK: Standard headings, single-column markdown, high keyword alignment.
+- QUANTIFICATION CHECK: Did EVERY SINGLE bullet point include an explicit metric (%, ms, numbers, scale)? YES.
+- LANGUAGE CHECK: 100% USA English spelling, flawless grammar, correct verb tenses.
+- RECRUITER CHECK: Punchy 1-2 line bullets, immediate engineering impact visible.
 """
 
 
@@ -170,18 +145,28 @@ MANDATORY INSTRUCTIONS:
    - Language
 
 2. FOR EACH OF THE 3 PROFESSIONAL ROLES:
-   You MUST write AT LEAST 4 strong, quantified, tailored bullet points that directly match and emphasize the skills and requirements needed for the target job description.
+   You MUST write AT LEAST 4 bullet points.
+   CRITICAL MANDATORY REQUIREMENT FOR ATS SCORING (> 85%):
+   - EVERY SINGLE BULLET POINT MUST CONTAIN CONCRETE QUANTIFIABLE METRICS (percentages %, latency ms, frame rates fps, scale numbers, active user counts, throughput, or time/cost savings) following the Google X-Y-Z formula: "Accomplished [X], as measured by [Y], by doing [Z]".
+   - An experience bullet WITHOUT an explicit quantifiable metric (numbers or percentages) is strictly forbidden.
+   - Tailor the candidate's verified metrics to directly target the required technologies and domain of the target job description.
 
-3. FOR TECHNICAL SKILLS:
+3. USA ENGLISH SPELLING & GRAMMAR:
+   - Use standard American English (USA English) spelling exclusively: "optimized", "analyzed", "prioritized", "modeled", "behavior", "catalog", "full-stack", "front-end", "back-end".
+   - Current role (Nurix Hive): Active present-tense verbs (Architect, Engineer, Build, Automate, Program, Deploy).
+   - Past roles (Manaknight Digital, MedLink Healthcare): Strong past-tense action verbs (Architected, Engineered, Spearheaded, Built, Reduced, Slashed, Accelerated).
+   - Zero spelling mistakes, zero typos, and flawless grammar throughout.
+
+4. FOR TECHNICAL SKILLS:
    Update and re-order the skills in each category (Front-End, Back-End, AI & Automation Tools) to highlight the technologies most relevant to the target job description.
 
-4. FORMATTING OUTPUT (Standard ATS Markdown):
+5. FORMATTING OUTPUT (Standard ATS Markdown):
    # Yeasaleh | Software Developer
    Dhaka, Bangladesh | +8801735782467 | yeasaleh.contact@gmail.com
    https://www.linkedin.com/in/yea-saleh | https://github.com/yeasaleh2002 | https://yeasaleh.xyz
 
    ## Professional Summary
-   [Tailored 3-4 sentence summary emphasizing background matching the target role]
+   [Tailored 3-4 sentence summary emphasizing background matching the target role, adhering strictly to USA English]
 
    ## Technical Skills
    **Front-End:** [Tailored front-end skills matching the job description]
@@ -192,30 +177,30 @@ MANDATORY INSTRUCTIONS:
 
    ### Nurix Hive | Software Engineer
    *Dhaka, Bangladesh (Remote) | August 2025 – Present*
-   - [Tailored bullet point 1]
-   - [Tailored bullet point 2]
-   - [Tailored bullet point 3]
-   - [Tailored bullet point 4]
+   - [Tailored bullet point 1 with explicit quantifiable metric % or number]
+   - [Tailored bullet point 2 with explicit quantifiable metric % or number]
+   - [Tailored bullet point 3 with explicit quantifiable metric % or number]
+   - [Tailored bullet point 4 with explicit quantifiable metric % or number]
 
    ### Manaknight Digital | Web Developer
    *Toronto, Canada (Remote) | December 2023 – July 2025*
-   - [Tailored bullet point 1]
-   - [Tailored bullet point 2]
-   - [Tailored bullet point 3]
-   - [Tailored bullet point 4]
+   - [Tailored bullet point 1 with explicit quantifiable metric % or number]
+   - [Tailored bullet point 2 with explicit quantifiable metric % or number]
+   - [Tailored bullet point 3 with explicit quantifiable metric % or number]
+   - [Tailored bullet point 4 with explicit quantifiable metric % or number]
 
    ### MedLink Healthcare Private Limited | Software Engineer
    *Hyderabad, India (Remote) | March 2022 – December 2023*
-   - [Tailored bullet point 1]
-   - [Tailored bullet point 2]
-   - [Tailored bullet point 3]
-   - [Tailored bullet point 4]
+   - [Tailored bullet point 1 with explicit quantifiable metric % or number]
+   - [Tailored bullet point 2 with explicit quantifiable metric % or number]
+   - [Tailored bullet point 3 with explicit quantifiable metric % or number]
+   - [Tailored bullet point 4 with explicit quantifiable metric % or number]
 
    ## Mentorship Experience
 
    ### Sadhinota Camp | Support Mentor (Voluntary)
    *Dhaka, Bangladesh | September 2024 – April 2025*
-   - Mentored students in full-stack architecture, improving student code quality by 40% through personalized code reviews and guidance.
+   - Mentored 45+ students in full-stack architecture, improving student code quality by 40% through personalized code reviews and guidance.
    - Formulated practical learning resources focused on frontend performance and error handling, enabling learners to reduce runtime errors by 30%.
 
    ## Education
@@ -435,9 +420,24 @@ CRITICAL CONSTRAINT:
         # Step 2: Generate PDF
         clean_company = re.sub(r"[^a-zA-Z0-9]", "_", company or "Company").strip("_")
         clean_title = re.sub(r"[^a-zA-Z0-9]", "_", job_title).strip("_")
-        fname = output_filename or f"Resume_{clean_company}_{clean_title}.pdf"
+        if output_filename:
+            out_p = Path(output_filename)
+            if out_p.is_absolute() or len(out_p.parts) > 1:
+                pdf_path = out_p
+                fname = out_p.name
+            else:
+                raw = str(output_filename)
+                if raw.startswith("Resume_"):
+                    fname = f"Yeasaleh_{raw}"
+                elif not raw.startswith("Yeasaleh_Resume"):
+                    fname = f"Yeasaleh_Resume_{raw}"
+                else:
+                    fname = raw
+                pdf_path = OUTPUT_DIR / fname
+        else:
+            fname = f"Yeasaleh_Resume_{clean_company}_{clean_title}.pdf"
+            pdf_path = OUTPUT_DIR / fname
 
-        pdf_path = OUTPUT_DIR / fname
         generated_path = self.generate_pdf(tailored_markdown, pdf_path)
 
         return {

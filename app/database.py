@@ -1,5 +1,7 @@
 import logging
 import os
+from pathlib import Path
+import shutil
 from datetime import date, datetime, timedelta, timezone
 import importlib
 from typing import Any, Generator, Optional
@@ -18,7 +20,18 @@ is_vercel = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 default_db_url = "sqlite:////tmp/jobs.db" if is_vercel else "sqlite:///./jobs.db"
 DATABASE_URL = os.getenv("DATABASE_URL", default_db_url).strip()
 
-if is_vercel and DATABASE_URL.startswith("sqlite:///."):
+# On Vercel / serverless, filesystem outside /tmp is strictly read-only.
+# SQLite must always write to /tmp/jobs.db. If jobs.db exists in repo, copy it over.
+if is_vercel and DATABASE_URL.startswith("sqlite"):
+    tmp_db = Path("/tmp/jobs.db")
+    if not tmp_db.exists():
+        repo_db = Path(__file__).resolve().parent.parent / "jobs.db"
+        if repo_db.exists():
+            try:
+                shutil.copy2(repo_db, tmp_db)
+                logger.info("Copied repository seeded jobs.db to writable /tmp/jobs.db")
+            except Exception as exc:
+                logger.warning("Could not copy bundled jobs.db to /tmp: %s", exc)
     DATABASE_URL = "sqlite:////tmp/jobs.db"
 
 # Normalize Heroku/Render legacy postgres:// to postgresql://

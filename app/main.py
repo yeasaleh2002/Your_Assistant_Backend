@@ -223,10 +223,10 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-# CORS Protection (supports GET, POST, PATCH, PUT, DELETE, OPTIONS)
+# CORS Protection (supports GET, POST, PATCH, PUT, DELETE, OPTIONS across all origins and credentials)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -476,6 +476,14 @@ async def delete_jobs_for_date(
     "/generate-resume/{id}",
     tags=["Resume Builder"],
 )
+@app.post(
+    "/api/generate-resume/{id}",
+    tags=["Resume Builder"],
+)
+@app.post(
+    "/api/jobs/{id}/resume",
+    tags=["Resume Builder"],
+)
 @limiter.limit("15/minute")
 async def generate_resume_for_job(
     request: Request,
@@ -515,6 +523,7 @@ async def generate_resume_for_job(
             "tailored_resume_markdown": result["tailored_markdown"],
             "pdf_filename": result["filename"],
             "pdf_path": result["pdf_path"],
+            "download_url": f"/api/resume/download/{result['filename']}",
         }
     except Exception as exc:
         logger.error("Failed to generate resume for job %d: %s", id, exc, exc_info=True)
@@ -526,6 +535,16 @@ async def generate_resume_for_job(
 
 @app.post(
     "/generate-email/{id}",
+    response_model=EmailDraft,
+    tags=["Cold Email Generator"],
+)
+@app.post(
+    "/api/generate-email/{id}",
+    response_model=EmailDraft,
+    tags=["Cold Email Generator"],
+)
+@app.post(
+    "/api/jobs/{id}/email",
     response_model=EmailDraft,
     tags=["Cold Email Generator"],
 )
@@ -752,7 +771,7 @@ async def tailor_resume_endpoint(
 
 class GenerateResumePDFRequest(BaseModel):
     markdown_text: str = Field(..., min_length=20, description="Markdown content of the tailored resume")
-    filename: Optional[str] = Field(default="tailored_resume.pdf", description="Output PDF filename")
+    filename: Optional[str] = Field(default="Yeasaleh_Resume.pdf", description="Output PDF filename")
 
 
 @app.post(
@@ -766,9 +785,20 @@ async def generate_resume_pdf_endpoint(
 ):
     """Convert tailored Markdown resume into a high-quality, ATS-optimized PDF and return it for download."""
     builder = ResumeBuilder()
-    raw_name = payload.filename or "tailored_resume.pdf"
+    raw_name = payload.filename or "Yeasaleh_Resume.pdf"
+    if raw_name.startswith("Resume_"):
+        raw_name = f"Yeasaleh_{raw_name}"
+    elif raw_name == "tailored_resume.pdf":
+        raw_name = "Yeasaleh_Resume.pdf"
+    elif not raw_name.startswith("Yeasaleh_Resume"):
+        raw_name = f"Yeasaleh_Resume_{raw_name}"
+
     safe_name = raw_name if raw_name.endswith(".pdf") else f"{raw_name}.pdf"
-    pdf_path = Path("output") / safe_name
+    is_vercel = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+    pdf_dir = Path("/tmp/output") if is_vercel else Path("output")
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = pdf_dir / safe_name
+
     try:
         generated_file = builder.generate_pdf(payload.markdown_text, pdf_path)
         return FileResponse(
@@ -781,6 +811,32 @@ async def generate_resume_pdf_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate PDF: {exc}",
         )
+
+
+@app.get(
+    "/api/resume/download/{filename}",
+    tags=["Resume Builder"],
+)
+@limiter.limit("30/minute")
+async def download_resume_pdf_endpoint(
+    request: Request,
+    filename: str,
+):
+    """Download a previously generated resume PDF file by filename."""
+    is_vercel = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+    pdf_dir = Path("/tmp/output") if is_vercel else Path("output")
+    clean_name = Path(filename).name
+    target_file = pdf_dir / clean_name
+    if not target_file.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Resume file '{clean_name}' not found.",
+        )
+    return FileResponse(
+        path=str(target_file),
+        filename=clean_name,
+        media_type="application/pdf",
+    )
 
 
 class GenerateEmailRequest(BaseModel):

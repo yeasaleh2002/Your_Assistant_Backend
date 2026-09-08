@@ -11,23 +11,26 @@ from app.main import app
 client = TestClient(app)
 
 
+from unittest.mock import patch
+
 def test_verify_admin_credentials():
     """Verify that verify_admin_credentials checks against environment values."""
-    # Matches ADMIN_EMAIL and ADMIN_PASSWORD configured in .env
-    valid = verify_admin_credentials("admin@yourassistant.com", "change_this_password")
-    assert valid is True
+    with patch("app.auth.get_admin_credentials", return_value={"email": "admin@yourassistant.com", "password": "change_this_password"}):
+        # Matches ADMIN_EMAIL and ADMIN_PASSWORD
+        valid = verify_admin_credentials("admin@yourassistant.com", "change_this_password")
+        assert valid is True
 
-    # Case insensitive email
-    valid_caps = verify_admin_credentials("ADMIN@yourassistant.com", "change_this_password")
-    assert valid_caps is True
+        # Case insensitive email
+        valid_caps = verify_admin_credentials("ADMIN@yourassistant.com", "change_this_password")
+        assert valid_caps is True
 
-    # Bad password
-    invalid = verify_admin_credentials("admin@yourassistant.com", "wrong_password")
-    assert invalid is False
+        # Bad password
+        invalid = verify_admin_credentials("admin@yourassistant.com", "wrong_password")
+        assert invalid is False
 
-    # Bad email
-    invalid_email = verify_admin_credentials("other@example.com", "change_this_password")
-    assert invalid_email is False
+        # Bad email
+        invalid_email = verify_admin_credentials("other@example.com", "change_this_password")
+        assert invalid_email is False
 
 
 def test_jwt_token_encode_decode():
@@ -44,18 +47,19 @@ def test_jwt_token_encode_decode():
 
 def test_login_endpoint_success_and_failure():
     """Verify POST /api/auth/login behavior."""
-    # 1. Successful login
-    success_payload = {
-        "email": "admin@yourassistant.com",
-        "password": "change_this_password",
-    }
-    res = client.post("/api/auth/login", json=success_payload)
-    assert res.status_code == 200, res.text
-    data = res.json()
-    assert "access_token" in data
-    assert data["token_type"] == "bearer"
-    assert data["user"]["email"] == "admin@yourassistant.com"
-    token = data["access_token"]
+    with patch("app.auth.get_admin_credentials", return_value={"email": "admin@yourassistant.com", "password": "change_this_password"}):
+        # 1. Successful login
+        success_payload = {
+            "email": "admin@yourassistant.com",
+            "password": "change_this_password",
+        }
+        res = client.post("/api/auth/login", json=success_payload)
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert "access_token" in data
+        assert data["token_type"] == "bearer"
+        assert data["user"]["email"] == "admin@yourassistant.com"
+        token = data["access_token"]
 
     # 2. Failed login (bad password)
     fail_payload = {

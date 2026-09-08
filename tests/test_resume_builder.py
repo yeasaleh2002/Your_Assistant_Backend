@@ -182,4 +182,25 @@ def test_api_resume_tailor_and_pdf_endpoints():
     assert res_pdf.status_code == 200
     assert res_pdf.headers["content-type"] == "application/pdf"
     assert res_pdf.content.startswith(b"%PDF-")
+    # Content-Disposition should contain Yeasaleh_Resume_test_download.pdf
+    assert "Yeasaleh_Resume_test_download.pdf" in res_pdf.headers["content-disposition"]
+
+    # 3. Test GET /api/resume/download/{filename}
+    res_dl = client.get("/api/resume/download/Yeasaleh_Resume_test_download.pdf")
+    assert res_dl.status_code == 200
+    assert res_dl.headers["content-type"] == "application/pdf"
+    assert res_dl.content.startswith(b"%PDF-")
+
+
+def test_yeasaleh_resume_filename_default(sample_resume_file):
+    """Verify default filename starts with Yeasaleh_Resume_."""
+    builder = ResumeBuilder(base_resume_path=sample_resume_file)
+    with patch("app.resume_builder.generate_ai_response", return_value="# Tailored Resume"):
+        result = builder.build_tailored_resume_pdf(
+            job_title="Full Stack Engineer",
+            job_description="React, Node.js, TypeScript",
+            company="Google",
+        )
+        assert result["filename"] == "Yeasaleh_Resume_Google_Full_Stack_Engineer.pdf"
+
 

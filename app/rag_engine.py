@@ -14,9 +14,14 @@ from app.scraper import ScrapedJob
 
 logger = logging.getLogger("your_assistant.rag_engine")
 
+is_vercel = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 DEFAULT_RESUME_PATH = Path("data") / "resume.txt"
-DEFAULT_CHROMA_PATH = "./chroma_db"
+DEFAULT_CHROMA_PATH = "/tmp/chroma_db" if is_vercel else "./chroma_db"
 MIN_MATCH_THRESHOLD = float(os.getenv("MIN_MATCH_SCORE", "55.0"))  # Cutoff (>= 55%) to filter qualified job matches
+
+if is_vercel:
+    os.environ.setdefault("FASTEMBED_CACHE_PATH", "/tmp/fastembed_cache")
+    os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
 
 
 
