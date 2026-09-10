@@ -48,14 +48,22 @@ if DATABASE_URL.startswith("sqlite"):
     logger.info("Configured SQLite database engine: %s", DATABASE_URL)
 else:
     # Production PostgreSQL or MySQL connection pooling
-    engine = create_engine(
-        DATABASE_URL,
-        pool_size=5 if is_vercel else 10,
-        max_overflow=10 if is_vercel else 20,
-        pool_pre_ping=True,
-        pool_recycle=1800,
-        echo=False,
-    )
+    if is_vercel:
+        from sqlalchemy.pool import NullPool
+        engine = create_engine(
+            DATABASE_URL,
+            poolclass=NullPool,
+            echo=False,
+        )
+    else:
+        engine = create_engine(
+            DATABASE_URL,
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+            echo=False,
+        )
     # Mask password for logging
     masked_url = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL.split("://")[0]
     logger.info("Configured production SQL database engine connected to: ...@%s", masked_url)

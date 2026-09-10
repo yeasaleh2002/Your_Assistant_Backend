@@ -4,7 +4,7 @@ import email.utils
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
@@ -459,9 +459,29 @@ class JobScraper:
     Hardcodes 12 primary software engineering keywords and enforces strict 24h & geo filters.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("SERPAPI_API_KEY", "")
+    def __init__(self, api_key: Optional[Union[str, List[str]]] = None):
+        self.api_keys: List[str] = self._resolve_api_keys(api_key)
+        self.api_key: str = self.api_keys[0] if self.api_keys else ""
         self.primary_keywords = PRIMARY_KEYWORDS
+
+    @staticmethod
+    def _resolve_api_keys(api_key: Optional[Union[str, List[str]]]) -> List[str]:
+        """Extract and clean a list of valid SerpApi keys from parameter or environment variable."""
+        raw_candidates: List[str] = []
+        if isinstance(api_key, list):
+            raw_candidates = api_key
+        elif api_key:
+            raw_candidates = str(api_key).split(",")
+        else:
+            env_val = os.getenv("SERPAPI_API_KEY", "") or os.getenv("SERPAPI_KEYS", "")
+            raw_candidates = env_val.split(",")
+
+        keys: List[str] = []
+        for raw_k in raw_candidates:
+            clean = raw_k.strip()
+            if clean and not clean.lower().startswith("your_") and clean.lower() not in ["placeholder", "xxx", "none", "null"]:
+                keys.append(clean)
+        return keys
 
     def build_query(self, job_keyword: Optional[str] = None) -> str:
         """Formulate search query based on input keyword or fallback."""
@@ -499,29 +519,63 @@ class JobScraper:
         limit: int = 15,
     ) -> List[Dict[str, Any]]:
         """
-        Perform HTTP request to SerpApi Google Jobs engine without broken chips.
+        Perform HTTP request to SerpApi Google Jobs engine with automatic multi-key rotation.
+        If a key hits search limits (HTTP 401/402/429 or quota error in JSON), it automatically rotates to the next key.
         """
-        if not self.api_key:
+        if not self.api_keys:
             return []
 
-        params: Dict[str, Any] = {
-            "engine": "google_jobs",
-            "q": query,
-            "api_key": self.api_key,
-            "hl": "en",
-        }
-        if location:
-            params["location"] = location
+        for idx, key in enumerate(self.api_keys):
+            params: Dict[str, Any] = {
+                "engine": "google_jobs",
+                "q": query,
+                "api_key": key,
+                "hl": "en",
+            }
+            if location:
+                params["location"] = location
 
-        try:
-            response = requests.get(SERPAPI_URL, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            jobs = data.get("jobs_results", [])
-            return jobs[:limit]
-        except Exception as exc:
-            logger.debug("SerpApi query '%s' encountered issue: %s", query, exc)
-            return []
+            try:
+                response = requests.get(SERPAPI_URL, params=params, timeout=15)
+                # Check for rate-limiting or quota exhaustion status codes
+                if response.status_code in [401, 402, 429]:
+                    logger.warning(
+                        "SerpApi key #%d encountered HTTP %d. Rotating to next key in pool...",
+                        idx + 1,
+                        response.status_code,
+                    )
+                    continue
+
+                response.raise_for_status()
+                data = response.json()
+
+                # Check for quota or auth errors returned inside the 200 JSON payload
+                if "error" in data:
+                    err_msg = str(data.get("error") or "").lower()
+                    if any(bad in err_msg for bad in ["search", "limit", "quota", "invalid", "unauthorized", "exhausted"]):
+                        logger.warning(
+                            "SerpApi key #%d quota/authorization notice: '%s'. Rotating to next key...",
+                            idx + 1,
+                            data.get("error"),
+                        )
+                        continue
+
+                jobs = data.get("jobs_results", [])
+                # Update current active key to the successfully working key
+                self.api_key = key
+                return jobs[:limit]
+
+            except Exception as exc:
+                logger.warning(
+                    "SerpApi query '%s' with key #%d encountered error: %s. Attempting next key in pool...",
+                    query,
+                    idx + 1,
+                    exc,
+                )
+                continue
+
+        logger.error("All %d SerpApi key(s) exhausted or failed for query: %s", len(self.api_keys), query)
+        return []
 
     def fetch_weworkremotely_feed(self, max_hours: Optional[int] = None) -> List[Dict[str, Any]]:
         """Fetch remote programming jobs from We Work Remotely public feed."""

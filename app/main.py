@@ -165,22 +165,23 @@ async def lifespan(app: FastAPI):
     - Gracefully stops the scheduler on shutdown.
     """
     logger.info("Initializing 'Your Assistant' AI Job Search Platform...")
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception as exc:
-        logger.warning("Database schema init notice: %s", exc)
-
-    # Automatically ensure 4,000 global software startups are seeded in the directory
-    try:
-        startup_session = SessionLocal()
-        seed_companies(startup_session, target_count=4000)
-        startup_session.close()
-    except Exception as exc:
-        logger.warning("Company directory startup seed notice: %s", exc)
-
-    # In serverless environments like Vercel, persistent cron loops cannot run
     is_serverless = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
     scheduler = None
+
+    # In serverless environments (Vercel/AWS Lambda), skip heavy blocking cold-start loops to stay within execution budgets
+    if not is_serverless:
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception as exc:
+            logger.warning("Database schema init notice: %s", exc)
+
+        # Automatically ensure global software startups are seeded in persistent servers
+        try:
+            startup_session = SessionLocal()
+            seed_companies(startup_session, target_count=4000)
+            startup_session.close()
+        except Exception as exc:
+            logger.warning("Company directory startup seed notice: %s", exc)
 
     if not is_serverless:
         try:
