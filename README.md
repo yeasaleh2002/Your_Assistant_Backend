@@ -155,12 +155,12 @@ Your_Assistant/
 
 ### 1. NeonDB PostgreSQL (Configured in `.env`)
 ```ini
-DATABASE_URL=postgresql://neondb_owner:npg_iX8Hz1qwmyxS@ep-ancient-art-ap0suate.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+DATABASE_URL=
 ```
 
 ### 2. MySQL
 ```ini
-DATABASE_URL=mysql+pymysql://user:password@localhost:3306/your_assistant_db
+DATABASE_URL=
 ```
 
 ### 3. SQLite (Local Offline Development)
