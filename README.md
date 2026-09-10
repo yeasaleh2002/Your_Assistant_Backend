@@ -410,17 +410,42 @@ Interactive docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 ---
 
-#### 8. `POST /generate-email/{id}`
-**Generate Personalized Cold Outreach Email**
-- **Description**: Resolves recruiter contact information and crafts a personalized, professional cold email.
+#### 8. `POST /generate-email/{id}` (or `POST /api/jobs/{id}/email`)
+**Generate Personalized Email Cover Letter & Formal Cover Letter**
+- **Description**: Resolves recruiter contact information and crafts a personalized email cover letter body AND a full formal cover letter specifically tailored to the stored job from the candidate's base resume.
 - **Rate Limit**: `20 requests/minute`
 
 **Response `200 OK`**:
 ```json
 {
   "email": "careers@example.com",
-  "subject": "Senior Frontend Engineer - Application & Overview",
-  "body": "Hi Team,\n\nI came across the Senior Frontend Engineer opening at Vercel Partner..."
+  "subject": "Senior Frontend Engineer Application - Yeasaleh | Vercel Partner",
+  "body": "Hi Vercel Partner Team,\n\nI noticed your opening for a Senior Frontend Engineer. With proven experience building high-performance web applications, reducing Cumulative Layout Shift (0.01 CLS), and scaling React/Next.js architectures, I would love to contribute...",
+  "cover_letter": "Dear Vercel Partner Hiring Team,\n\nI am writing to submit my application for the Senior Frontend Engineer position. With demonstrated expertise in modern full-stack development, distributed API architecture, and performance optimization, I am confident in my ability to bring immediate technical value..."
+}
+```
+
+---
+
+#### 9. `POST /api/jobs/{id}/cover-letter` (or `POST /generate-cover-letter/{id}`)
+**Generate Dedicated Cover Letter for Stored Job**
+- **Description**: Generates a full formal 3–4 paragraph ATS cover letter based on the candidate's base resume for a specific job, plus the email version.
+- **Rate Limit**: `20 requests/minute`
+
+**Response `200 OK`**:
+```json
+{
+  "status": "success",
+  "job_id": 1,
+  "job_title": "Senior Frontend Engineer",
+  "company": "Vercel Partner",
+  "cover_letter": "Dear Vercel Partner Hiring Team,\n\nI am writing to submit my application for the Senior Frontend Engineer position...",
+  "email_cover_letter": {
+    "email": "careers@example.com",
+    "subject": "Senior Frontend Engineer Application - Yeasaleh | Vercel Partner",
+    "body": "Hi Vercel Partner Team...",
+    "cover_letter": "..."
+  }
 }
 ```
 

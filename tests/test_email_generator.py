@@ -45,6 +45,7 @@ def test_generate_cold_email_json_output(tmp_path):
         "email": "hiring@anthropic.com",
         "subject": "Senior AI Systems Engineer - Alex Rivera | Python & RAG Specialist",
         "body": "Hi Team,\n\nI noticed your opening for a Senior AI Engineer. With 7+ years scaling FastAPI and ChromaDB pipelines, I would love to contribute to Anthropic.\n\nBest,\nAlex Rivera",
+        "cover_letter": "Dear Anthropic Hiring Team,\n\nI am applying for the Senior AI Engineer role. With extensive experience in Python and FastAPI, I look forward to contributing.",
     })
 
     with patch("app.email_generator.generate_ai_response", return_value=mock_llm_json) as mock_llm:
@@ -119,3 +120,69 @@ def test_api_generate_email_endpoint():
         assert data["email"] == "recruiting@deepmind.com"
         assert "Senior AI Platform Engineer" in data["subject"]
         assert "DeepMind" in data["body"]
+
+
+def test_generate_cover_letter_for_job_api():
+    """Verify POST /api/jobs/{id}/cover-letter and /api/jobs/{id}/email return tailored cover letter."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.database import SessionLocal
+    from app.models import Job
+    import datetime
+
+    client = TestClient(app)
+    db = SessionLocal()
+    test_job = Job(
+        title="Full Stack Cloud Architect",
+        company="NexTech Solutions",
+        link="https://nextech.io/jobs/123",
+        match_score=87.5,
+        location="Remote",
+        status="Pending",
+        scraped_date=datetime.date.today(),
+        description="Looking for an engineer skilled in Next.js, Node.js, and FastAPI.",
+        recruiter_email="hiring@nextech.io",
+    )
+    db.add(test_job)
+    db.commit()
+    db.refresh(test_job)
+    job_id = test_job.id
+
+    try:
+        fake_email = {
+            "email": "hiring@nextech.io",
+            "subject": "Full Stack Cloud Architect Application - Yeasaleh | NexTech Solutions",
+            "body": "Dear NexTech Team, I am thrilled to apply for the Full Stack Cloud Architect opening.",
+            "cover_letter": "Dear NexTech Solutions Team,\n\nI am writing to submit my application for the Full Stack Cloud Architect position.",
+        }
+        fake_cl = "Dear NexTech Solutions Team,\n\nI am writing to submit my application for the Full Stack Cloud Architect position with proven expertise in Next.js and FastAPI."
+
+        with patch("app.email_generator.EmailGenerator.generate_cover_letter", return_value=fake_cl), \
+             patch("app.email_generator.EmailGenerator.generate_cold_email", return_value=fake_email):
+
+            # 1. Test POST /api/jobs/{id}/cover-letter
+            res_cl = client.post(f"/api/jobs/{job_id}/cover-letter")
+            assert res_cl.status_code == 200
+            cl_data = res_cl.json()
+            assert cl_data["status"] == "success"
+            assert cl_data["job_id"] == job_id
+            assert cl_data["job_title"] == "Full Stack Cloud Architect"
+            assert cl_data["company"] == "NexTech Solutions"
+            assert len(cl_data["cover_letter"]) > 50
+            assert "Full Stack Cloud Architect" in cl_data["cover_letter"]
+            assert "email_cover_letter" in cl_data
+            assert "Full Stack Cloud Architect" in cl_data["email_cover_letter"]["subject"]
+
+            # 2. Test POST /api/jobs/{id}/email
+            res_email = client.post(f"/api/jobs/{job_id}/email")
+            assert res_email.status_code == 200
+            email_data = res_email.json()
+            assert email_data["email"] == "hiring@nextech.io"
+            assert "Full Stack Cloud Architect" in email_data["subject"]
+            assert len(email_data["body"]) > 30
+            assert "cover_letter" in email_data
+            assert len(email_data["cover_letter"]) > 50
+    finally:
+        db.delete(test_job)
+        db.commit()
+        db.close()

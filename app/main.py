@@ -732,6 +732,84 @@ async def generate_email_for_job(
         )
 
 
+class JobCoverLetterResponse(BaseModel):
+    status: str = "success"
+    job_id: int
+    job_title: str
+    company: str
+    cover_letter: str
+    email_cover_letter: EmailDraft
+
+
+@app.post(
+    "/api/jobs/{id}/cover-letter",
+    response_model=JobCoverLetterResponse,
+    tags=["Cover Letter Generator"],
+)
+@app.post(
+    "/generate-cover-letter/{id}",
+    response_model=JobCoverLetterResponse,
+    tags=["Cover Letter Generator"],
+    include_in_schema=False,
+)
+@app.post(
+    "/api/generate-cover-letter/{id}",
+    response_model=JobCoverLetterResponse,
+    tags=["Cover Letter Generator"],
+    include_in_schema=False,
+)
+@limiter.limit("20/minute")
+async def generate_cover_letter_for_job_endpoint(
+    request: Request,
+    id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a full formal ATS cover letter based on candidate's base resume for a specific stored job record.
+    Also includes a tailored direct email cover letter.
+    """
+    job = db.query(Job).filter(Job.id == id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job record with ID {id} does not exist.",
+        )
+
+    generator = EmailGenerator()
+    job_desc = (
+        job.description
+        if job.description and len(job.description.strip()) > 15
+        else f"{job.title} at {job.company}. Job Link: {job.link}"
+    )
+
+    try:
+        cover_letter = generator.generate_cover_letter(
+            job_title=job.title,
+            job_description=job_desc,
+            company=job.company,
+        )
+        email_draft_dict = generator.generate_cold_email(
+            job_title=job.title,
+            job_description=job_desc,
+            company=job.company,
+            recruiter_email=job.recruiter_email,
+        )
+        return JobCoverLetterResponse(
+            status="success",
+            job_id=job.id,
+            job_title=job.title,
+            company=job.company,
+            cover_letter=cover_letter,
+            email_cover_letter=EmailDraft(**email_draft_dict),
+        )
+    except Exception as exc:
+        logger.error("Failed to generate cover letter for job %d: %s", id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating cover letter: {exc}",
+        )
+
+
 # ==============================================================================
 # Backward Compatibility & Utility Endpoints
 # ==============================================================================

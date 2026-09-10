@@ -463,6 +463,34 @@
       "name": "07 - Cold Outreach & Email",
       "item": [
         {
+          "name": "Generate Cold Email & Cover Letter for Stored Job (POST /api/jobs/1/email)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs/1/email",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs", "1", "email"]
+            },
+            "description": "Generates both a high-converting email cover letter and a formal ATS cover letter based on candidate base resume for a stored job record."
+          },
+          "response": []
+        },
+        {
+          "name": "Generate Dedicated Formal Cover Letter for Stored Job (POST /api/jobs/1/cover-letter)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/jobs/1/cover-letter",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "jobs", "1", "cover-letter"]
+            },
+            "description": "Generates a full 3-4 paragraph formal cover letter tailored specifically to a stored job based on the candidate's resume."
+          },
+          "response": []
+        },
+        {
           "name": "Generate Cold Outreach Email (Custom Job)",
           "request": {
             "method": "POST",

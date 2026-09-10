@@ -29,7 +29,7 @@ IGNORED_PATTERNS = {
 
 
 class EmailDraft(BaseModel):
-    """Structured JSON schema for generated cold outreach email."""
+    """Structured JSON schema for generated cold outreach email and formal cover letter."""
     model_config = ConfigDict(str_strip_whitespace=True)
 
     email: str = Field(
@@ -42,7 +42,11 @@ class EmailDraft(BaseModel):
     )
     body: str = Field(
         ...,
-        description="Personalized cold email body emphasizing genuine skills from the resume",
+        description="Personalized email cover letter body emphasizing genuine skills from the resume",
+    )
+    cover_letter: Optional[str] = Field(
+        default=None,
+        description="Full formal ATS-optimized cover letter tailored to the job role and company based on resume",
     )
 
 
@@ -204,6 +208,13 @@ Return ONLY a valid JSON object formatted exactly as:
                 system_prompt=system_prompt,
             )
             parsed_data = self._parse_json_response(raw_response, default_email=resolved_email, default_subject=default_subject)
+            if not parsed_data.get("cover_letter"):
+                parsed_data["cover_letter"] = self.generate_cover_letter(
+                    job_title=job_title,
+                    job_description=job_description,
+                    company=company,
+                    base_resume_text=resume_content,
+                )
             return parsed_data
         except Exception as exc:
             logger.warning("LLM call failed for cold email (%s), using deterministic fallback.", exc)
@@ -217,10 +228,21 @@ Return ONLY a valid JSON object formatted exactly as:
                 f"Best regards,\nYeasaleh\n{job_title}\n+8801735782467 | yeasaleh.contact@gmail.com\n"
                 f"Portfolio: https://yeasaleh.xyz | LinkedIn: https://www.linkedin.com/in/yea-saleh"
             )
+            fallback_cover_letter = (
+                f"Dear {company_name} Hiring Team,\n\n"
+                f"I am writing to submit my application for the {job_title} position. "
+                f"With demonstrated expertise in modern full-stack development, distributed API architecture, and performance optimization, "
+                f"I am confident in my ability to bring immediate technical value to {company_name}.\n\n"
+                f"Throughout my work at Nurix Hive and Manaknight Digital, I have specialized in engineering resilient backends, "
+                f"responsive front-ends, and automated data pipelines that reduce latency and accelerate operational workflows.\n\n"
+                f"Thank you for your time and consideration. You can explore my live work at https://yeasaleh.xyz.\n\n"
+                f"Sincerely,\nYeasaleh\n{job_title}\n+8801735782467 | yeasaleh.contact@gmail.com"
+            )
             return {
                 "email": resolved_email,
                 "subject": default_subject,
                 "body": fallback_body,
+                "cover_letter": fallback_cover_letter,
             }
 
     def generate_cover_letter(
@@ -321,7 +343,8 @@ INSTRUCTIONS:
             if not body:
                 body = raw_text.strip()
 
-            draft = EmailDraft(email=email, subject=subject, body=body)
+            cover_letter = str(data.get("cover_letter") or "").strip() or None
+            draft = EmailDraft(email=email, subject=subject, body=body, cover_letter=cover_letter)
             return draft.model_dump()
         except Exception as exc:
             logger.warning("Failed to parse clean JSON from LLM response (%s). Using fallback parsing.", exc)
