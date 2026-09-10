@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from sqlalchemy import Column, Date, DateTime, Enum as SQLEnum, Float, Integer, String, Text
@@ -220,3 +220,77 @@ class JobResponse(BaseModel):
 JobHistoryBase = JobBase
 JobHistoryCreate = JobCreate
 JobHistoryResponse = JobResponse
+
+
+# ==============================================================================
+# Software Startup & Remote Tech Companies Directory
+# ==============================================================================
+
+class Company(Base):
+    """
+    SQLAlchemy ORM model for storing curated global software startups and remote tech companies.
+    Enforces uniqueness on company name and website to prevent duplicate entries.
+    """
+    __tablename__ = "companies"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(255), nullable=False, unique=True, index=True)
+    website = Column(String(255), nullable=False)
+    careers_page = Column(Text, nullable=True)
+    contact_email = Column(String(255), nullable=True)
+    country = Column(String(100), nullable=False, index=True)
+    city = Column(String(100), nullable=True)
+    founded_year = Column(Integer, nullable=False, index=True)
+    industry = Column(String(100), default="Software & Technology", nullable=False)
+    tech_stack = Column(Text, nullable=True)
+    remote_policy = Column(String(50), default="Remote-First", nullable=False)
+    employee_count = Column(String(50), nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<Company(id={self.id}, name='{self.name}', country='{self.country}', founded={self.founded_year})>"
+
+
+class CompanyBase(BaseModel):
+    """Base Pydantic model for software startup company."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1, max_length=255, description="Company name")
+    website: str = Field(..., description="Company official website URL")
+    careers_page: Optional[str] = Field(default=None, description="Direct link to careers or job portal")
+    contact_email: Optional[str] = Field(default=None, description="Contact or HR/recruiting email")
+    country: str = Field(..., description="Country of origin / HQ (e.g. USA, Canada, Singapore, UK)")
+    city: Optional[str] = Field(default=None, description="Headquarters city")
+    founded_year: int = Field(..., ge=1990, le=2026, description="Year company was founded")
+    industry: str = Field(default="Software & Technology", description="Industry sector")
+    tech_stack: Optional[str] = Field(default=None, description="Primary technologies & frameworks")
+    remote_policy: str = Field(default="Remote-First", description="Remote working policy")
+    employee_count: Optional[str] = Field(default=None, description="Estimated team size range")
+    description: Optional[str] = Field(default=None, description="Company overview and product mission")
+
+
+class CompanyCreate(CompanyBase):
+    pass
+
+
+class CompanyResponse(CompanyBase):
+    """Response model for company record."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: Optional[datetime] = None
+
+
+class CompanyPaginationResponse(BaseModel):
+    """Paginated list of software companies."""
+    total: int = Field(..., description="Total companies matching query")
+    page: int = Field(..., description="Current page number (1-indexed)")
+    limit: int = Field(..., description="Items per page")
+    total_pages: int = Field(..., description="Total pages available")
+    items: List[CompanyResponse] = Field(..., description="List of companies on current page")

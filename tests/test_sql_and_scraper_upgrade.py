@@ -24,9 +24,15 @@ client = TestClient(app)
 
 
 def setup_function():
-    """Reset database state for clean test isolation."""
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    """Reset job test records for clean test isolation without dropping company directory."""
+    db = SessionLocal()
+    try:
+        db.query(Job).delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 
 # ==============================================================================

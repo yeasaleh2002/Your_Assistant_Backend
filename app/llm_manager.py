@@ -16,7 +16,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 
 # ==============================================================================
@@ -176,7 +176,7 @@ class LLMManager:
         system_prompt: Optional[str] = None,
     ) -> str:
         """Execute request to Google Gemini generateContent API."""
-        models_to_try = [self.gemini_model, "gemini-flash-latest", "gemini-3.5-flash", "gemini-3.1-pro-preview"]
+        models_to_try = [self.gemini_model, "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-flash-latest"]
         # deduplicate while preserving order
         seen = set()
         models = [m for m in models_to_try if not (m in seen or seen.add(m))]

@@ -21,9 +21,15 @@ client = TestClient(app)
 
 
 def setup_function():
-    """Reset database state for clean test isolation."""
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    """Reset database state for clean test isolation without dropping companies table."""
+    db = SessionLocal()
+    try:
+        db.query(JobHistory).delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 
 def test_scraper_query_builder_keyword_and_fallback():

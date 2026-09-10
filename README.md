@@ -426,7 +426,57 @@ Interactive docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 ---
 
+### Custom Job Description Tailoring (Direct Raw Text Input)
+
+#### `POST /api/job-description/tailor`
+**Generate 100% ATS-Optimized Resume, Match Score, Cold Email & Cover Letter from Raw Job Description**
+- **Description**: Accept any raw text job description, calculate semantic vector RAG match score against the user's base resume, generate a 100% ATS-compliant PDF with ReportLab, and provide a tailored cold email draft plus a full formal cover letter.
+- **Dynamic Job Title Replacement**: Replaces `"Software Developer"` with the target job title across:
+  - Resume Header: `# Yeasaleh | {job_title}`
+  - Resume Professional Summary: Aligned to the target role
+  - Cold Outreach Email & Cover Letter
+- **PDF Naming Convention**:
+  - If company is provided: `Yeasaleh_Resume_{clean_company}_{clean_title}.pdf`
+  - If company is absent: `Yeasaleh_Resume_{clean_title}.pdf`
+- **Rate Limit**: `15 requests/minute`
+
+**Request Body (`application/json`)**:
+```json
+{
+  "job_description": "We are seeking a Senior React Engineer with deep experience in Next.js, TypeScript, and state management. Send applications to careers@technova.io.",
+  "job_title": "Senior React Engineer",
+  "company": "TechNova Corp",
+  "recruiter_email": "careers@technova.io"
+}
+```
+
+**Response `200 OK`**:
+```json
+{
+  "status": "success",
+  "job_title": "Senior React Engineer",
+  "company": "TechNova Corp",
+  "match_score": 84.2,
+  "pdf_filename": "Yeasaleh_Resume_TechNova_Corp_Senior_React_Engineer.pdf",
+  "pdf_path": "output/Yeasaleh_Resume_TechNova_Corp_Senior_React_Engineer.pdf",
+  "download_url": "/api/resume/download/Yeasaleh_Resume_TechNova_Corp_Senior_React_Engineer.pdf",
+  "tailored_resume_markdown": "# Yeasaleh | Senior React Engineer\nDhaka, Bangladesh | +8801735782467...",
+  "cold_email": {
+    "recruiter_email": "careers@technova.io",
+    "subject": "Senior React Engineer Application - Yeasaleh | TechNova Corp",
+    "body": "Hi Team at TechNova Corp,\n\nI noticed your opening for a Senior React Engineer...",
+    "candidate_name": "Yeasaleh",
+    "portfolio_link": "https://yeasaleh.xyz",
+    "call_to_action": "Would you have 10-15 minutes this week for a brief conversation?"
+  },
+  "cover_letter": "Dear Hiring Team at TechNova Corp,\n\nI am writing to express my enthusiastic interest in the Senior React Engineer position..."
+}
+```
+
+---
+
 ### Legacy & Utility Endpoints
+
 
 #### 9. `GET /`
 Returns service status and the Antigravity active easter egg.
@@ -462,6 +512,10 @@ A pre-configured Postman Collection is included in the root directory:
 5. **05 - Scraper & Vector RAG Testing**: Raw scrape & threshold testing.
 6. **06 - AI & ATS Resume Builder**: Tailored markdown & PDF compilation.
 7. **07 - Cold Outreach & Email**: Customized cold email draft generation.
+8. **08 - Custom Job Description Tailoring**:
+   - `Process Custom Job Description (With Company & Title)`
+   - `Process Custom Job Description (No Company Name)`
+   - `Download Tailored Resume PDF`
 
 ---
 

@@ -3,6 +3,7 @@ import antigravity  # Easter Egg: Elevating Python & AI job searches into orbit!
 from datetime import date, datetime, timezone
 import importlib
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -47,7 +48,11 @@ from app.database import (
 )
 from app.email_generator import EmailDraft, EmailGenerator
 from app.llm_manager import AllProvidersExhaustedError, generate_ai_response
+from app.company_seeder import seed_companies
 from app.models import (
+    Company,
+    CompanyPaginationResponse,
+    CompanyResponse,
     Job,
     JobCreate,
     JobHistory,
@@ -164,6 +169,14 @@ async def lifespan(app: FastAPI):
         Base.metadata.create_all(bind=engine)
     except Exception as exc:
         logger.warning("Database schema init notice: %s", exc)
+
+    # Automatically ensure 4,000 global software startups are seeded in the directory
+    try:
+        startup_session = SessionLocal()
+        seed_companies(startup_session, target_count=4000)
+        startup_session.close()
+    except Exception as exc:
+        logger.warning("Company directory startup seed notice: %s", exc)
 
     # In serverless environments like Vercel, persistent cron loops cannot run
     is_serverless = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
@@ -466,6 +479,132 @@ async def delete_jobs_for_date(
         "deleted_count": deleted_count,
         "message": f"Successfully deleted {deleted_count} jobs scraped on {target_date.isoformat()}.",
     }
+
+
+# ==============================================================================
+# Software Startups Directory Endpoints (Verified Real Tech Companies)
+# ==============================================================================
+
+@app.get(
+    "/api/companies",
+    response_model=CompanyPaginationResponse,
+    tags=["Company Directory"],
+)
+@limiter.limit("60/minute")
+async def get_companies(
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    limit: int = Query(50, ge=1, le=200, description="Items per page (max 200)"),
+    country: Optional[str] = Query(None, description="Filter by country (case-insensitive, e.g. Saudi Arabia, Malaysia, UAE, USA)"),
+    year: Optional[int] = Query(None, description="Exact founded year (e.g. 2026)"),
+    founded_year_min: Optional[int] = Query(None, ge=1990, le=2026, description="Filter by minimum founded year"),
+    founded_year_max: Optional[int] = Query(None, ge=1990, le=2026, description="Filter by maximum founded year"),
+    remote_policy: Optional[str] = Query(None, description="Filter by remote policy (e.g. Fully Remote, Remote-First)"),
+    search: Optional[str] = Query(None, description="Search by name, description, tech stack, or industry"),
+    sort: Optional[str] = Query("newest", description="Sort order: 'newest' (shows newest first, previous companies below), 'oldest', 'year_desc', 'name'"),
+    db: Session = Depends(get_db),
+):
+    """
+    Search and paginate software startups and remote tech companies across Arab nations, Malaysia, and worldwide.
+    Supports filtering by country, exact founded year (including 2026), year ranges, and text search with full pagination.
+    """
+    query = db.query(Company)
+
+    # 1. Filter by country
+    target_country = country or request.query_params.get("country")
+    if target_country and target_country.strip():
+        query = query.filter(Company.country.ilike(f"%{target_country.strip()}%"))
+
+    # 2. Filter by exact founded year (e.g. 2026)
+    target_year = None
+    if year is not None:
+        target_year = year
+    elif "year" in request.query_params:
+        try:
+            target_year = int(request.query_params["year"])
+        except Exception:
+            pass
+    elif "founded_year" in request.query_params:
+        try:
+            target_year = int(request.query_params["founded_year"])
+        except Exception:
+            pass
+
+    if target_year is not None:
+        query = query.filter(Company.founded_year == target_year)
+
+    # 3. Filter by founded year range
+    min_year = founded_year_min or request.query_params.get("founded_year_min")
+    if min_year is not None:
+        try:
+            query = query.filter(Company.founded_year >= int(min_year))
+        except Exception:
+            pass
+
+    max_year = founded_year_max or request.query_params.get("founded_year_max")
+    if max_year is not None:
+        try:
+            query = query.filter(Company.founded_year <= int(max_year))
+        except Exception:
+            pass
+
+    # 4. Filter by remote policy
+    if remote_policy and remote_policy.strip():
+        query = query.filter(Company.remote_policy.ilike(f"%{remote_policy.strip()}%"))
+
+    # 5. Search keyword
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                Company.name.ilike(term),
+                Company.tech_stack.ilike(term),
+                Company.industry.ilike(term),
+                Company.city.ilike(term),
+                Company.description.ilike(term),
+            )
+        )
+
+    # 6. Sorting
+    if sort == "newest":
+        query = query.order_by(Company.id.desc())
+    elif sort == "oldest":
+        query = query.order_by(Company.id.asc())
+    elif sort == "year_desc":
+        query = query.order_by(Company.founded_year.desc(), Company.id.desc())
+    elif sort == "name":
+        query = query.order_by(Company.name.asc())
+    else:
+        query = query.order_by(Company.id.desc())
+
+    total = query.count()
+    total_pages = max(1, math.ceil(total / limit)) if total > 0 else 1
+    offset = (page - 1) * limit
+    items = query.offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages,
+        "items": items,
+    }
+
+
+@app.post(
+    "/api/companies/seed",
+    tags=["Company Directory"],
+)
+@limiter.limit("5/minute")
+async def seed_company_directory(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Seed or refresh the verified software startup companies directory.
+    """
+    result = seed_companies(db)
+    return result
 
 
 # ==============================================================================
@@ -875,6 +1014,127 @@ async def generate_email_endpoint(
         )
 
 
+class JobDescriptionTailorRequest(BaseModel):
+    job_description: str = Field(..., min_length=15, description="Full raw job description text")
+    job_title: Optional[str] = Field(default=None, max_length=255, description="Target job title (e.g. Senior Frontend Engineer). If omitted, inferred from job description or defaults to 'Full Stack Software Engineer'.")
+    company: Optional[str] = Field(default=None, max_length=255, description="Target company name. If omitted, filename uses candidate name and title only.")
+    recruiter_email: Optional[str] = Field(default=None, description="Optional recruiter email address")
+    base_resume_text: Optional[str] = Field(default=None, description="Optional custom base resume text override")
+
+
+class JobDescriptionTailorResponse(BaseModel):
+    status: str = "success"
+    job_title: str
+    company: Optional[str] = None
+    match_score: float
+    pdf_filename: str
+    pdf_path: str
+    download_url: str
+    tailored_resume_markdown: str
+    cold_email: EmailDraft
+    cover_letter: str
+
+
+@app.post(
+    "/api/job-description/tailor",
+    response_model=JobDescriptionTailorResponse,
+    tags=["Custom Job Description Tailoring"],
+)
+@app.post(
+    "/api/custom-job/process",
+    response_model=JobDescriptionTailorResponse,
+    tags=["Custom Job Description Tailoring"],
+    include_in_schema=False,
+)
+@limiter.limit("15/minute")
+async def process_custom_job_description_endpoint(
+    request: Request,
+    payload: JobDescriptionTailorRequest,
+):
+    """
+    Accept any raw job description in text format and perform end-to-end processing:
+    1. Infer or accept the specific target job title (replaces 'Software Developer' across resume and outreach).
+    2. Compute semantic vector RAG match score (%) against candidate base resume.
+    3. Generate 100% ATS-optimized tailored resume PDF with quantifiable metrics.
+    4. Set filename to Yeasaleh_Resume_{company}_{title}.pdf (or Yeasaleh_Resume_{title}.pdf if company is omitted).
+    5. Generate tailored cold email draft and full formal cover letter.
+    """
+    target_title = (payload.job_title or "").strip()
+    if not target_title:
+        for line in payload.job_description.splitlines()[:6]:
+            line_clean = line.strip()
+            for prefix in ["Title:", "Job Title:", "Role:", "Position:"]:
+                if line_clean.lower().startswith(prefix.lower()):
+                    candidate_title = line_clean[len(prefix):].strip()
+                    if candidate_title:
+                        target_title = candidate_title
+                        break
+            if target_title:
+                break
+        if not target_title:
+            target_title = "Full Stack Software Engineer"
+
+    clean_company = payload.company.strip() if payload.company and payload.company.strip() else None
+
+    try:
+        # 1. Calculate semantic vector RAG match score
+        rag = RAGEngine()
+        match_score = rag.calculate_match_score(
+            job_description=payload.job_description,
+            job_title=target_title,
+            base_resume_text=payload.base_resume_text,
+        )
+
+        # 2. Build 100% ATS-friendly PDF & tailored markdown
+        builder = ResumeBuilder()
+        resume_res = builder.build_tailored_resume_pdf(
+            job_title=target_title,
+            job_description=payload.job_description,
+            company=clean_company,
+            base_resume_text=payload.base_resume_text,
+        )
+        pdf_filename = resume_res["filename"]
+        pdf_path = resume_res["pdf_path"]
+        tailored_markdown = resume_res["tailored_markdown"]
+        download_url = f"/api/resume/download/{pdf_filename}"
+
+        # 3. Generate cold outreach email draft and formal cover letter
+        generator = EmailGenerator()
+        cold_email = generator.generate_cold_email(
+            job_title=target_title,
+            job_description=payload.job_description,
+            company=clean_company,
+            recruiter_email=payload.recruiter_email,
+            base_resume_text=payload.base_resume_text,
+        )
+        cover_letter = generator.generate_cover_letter(
+            job_title=target_title,
+            job_description=payload.job_description,
+            company=clean_company,
+            base_resume_text=payload.base_resume_text,
+        )
+
+        return JobDescriptionTailorResponse(
+            status="success",
+            job_title=target_title,
+            company=clean_company,
+            match_score=match_score,
+            pdf_filename=pdf_filename,
+            pdf_path=pdf_path,
+            download_url=download_url,
+            tailored_resume_markdown=tailored_markdown,
+            cold_email=cold_email,
+            cover_letter=cover_letter,
+        )
+    except Exception as exc:
+        logger.error(f"Error processing custom job description: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process custom job description: {exc}",
+        )
+
+
+
 @app.post(
     "/api/jobs/cleanup",
     tags=["Maintenance"],
@@ -892,3 +1152,5 @@ async def trigger_manual_cleanup(
         "retention_days": retention_days,
         "records_deleted": deleted,
     }
+
+

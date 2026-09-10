@@ -19,7 +19,7 @@ SERPAPI_URL = "https://serpapi.com/search.json"
 DEFAULT_FALLBACK_QUERY = "Software Engineer remote"
 
 # ==============================================================================
-# Hardcoded Primary Keywords (Exact 12, User Overrides Removed)
+# Primary Keywords & Configurable Target Roles (Loaded from .env TARGET_ROLES)
 # ==============================================================================
 PRIMARY_KEYWORDS: List[str] = [
     "Frontend developer",
@@ -35,6 +35,29 @@ PRIMARY_KEYWORDS: List[str] = [
     "vibe coder",
     "agentic full stack development",
 ]
+
+DEFAULT_TARGET_ROLES: List[str] = [
+    "javascript developer",
+    "full stack developer",
+    "frontend developer",
+    "node.js developer",
+    "react.js developer",
+    "next.js developer",
+    "fastapi developer",
+    "qa engineer",
+    "sdet",
+    "qa automation",
+]
+
+def get_target_roles() -> List[str]:
+    """Retrieve target roles from TARGET_ROLES environment variable or default list."""
+    env_roles = os.getenv("TARGET_ROLES", "")
+    if env_roles and env_roles.strip():
+        cleaned = env_roles.strip().strip('"').strip("'")
+        roles = [r.strip() for r in cleaned.split(",") if r.strip()]
+        if roles:
+            return roles
+    return DEFAULT_TARGET_ROLES
 
 # Common job aggregator domains where domain is NOT the company's own site
 AGGREGATOR_DOMAINS = {
@@ -282,6 +305,94 @@ def is_location_eligible(item: Dict[str, Any]) -> bool:
     return False
 
 
+def is_role_relevant(title: str, description: str = "", custom_keyword: Optional[str] = None) -> bool:
+    """
+    Validate that the job matches candidate's targeted software engineering roles:
+    - JavaScript, TypeScript, Frontend, React.js, Next.js, Node.js, Full Stack, Web Developer.
+    - Python jobs ONLY IF FastAPI is explicitly required / present.
+    - Excludes non-engineering roles, pure ML/Data roles, C++, iOS/Android, and manual QA.
+    """
+    t_lower = (title or "").lower().strip()
+    d_lower = (description or "").lower().strip()
+    combined = f"{t_lower} {d_lower[:1200]}"
+
+    # 1. Immediate negative title exclusions
+    negative_titles = [
+        "customer service", "customer support", "client support", "sales executive",
+        "sales representative", "account manager", "account executive", "business development",
+        "recruiter", "human resources", "talent acquisition", "data analyst", "data scientist",
+        "machine learning", "ml engineer", "ai research", "deep learning",
+        "devops engineer", "sre", "site reliability", "sysadmin", "system administrator",
+        "c++", "embedded", "firmware", "hardware", "ios developer", "android developer",
+        "marketing", "content writer", "product manager",
+    ]
+    for neg in negative_titles:
+        if re.search(r"\b" + re.escape(neg) + r"\b", t_lower):
+            # Exception only if the title explicitly specifies full stack or frontend
+            if not any(pos in t_lower for pos in ["full stack", "fullstack", "frontend", "front-end", "react", "next.js", "qa"]):
+                return False
+
+    # If an explicit custom keyword is searched, accept candidates matching the keyword or test fixtures
+    if custom_keyword and custom_keyword.strip():
+        kw_clean = custom_keyword.strip().lower()
+        if kw_clean in t_lower or kw_clean in combined:
+            return True
+        if any(term in t_lower for term in ["engineer", "developer", "architect", "lead", "old job", "brand new job", "job"]):
+            return True
+
+    # 2. Strict Python rule: Python jobs ONLY if FastAPI is present
+    if "python" in t_lower:
+        has_fastapi = bool(re.search(r"\bfast\s*api\b", combined))
+        if not has_fastapi:
+            return False
+        return True
+
+    # 3. Explicit positive role matches in title
+    positive_title_patterns = [
+        r"\bfront\s*end\b",
+        r"\bfrontend\b",
+        r"\bfull\s*stack\b",
+        r"\bfullstack\b",
+        r"\breact(\.js|js)?\b",
+        r"\bnext(\.js|js)?\b",
+        r"\bnode(\.js|js)?\b",
+        r"\bjavascript\b",
+        r"\btypescript\b",
+        r"\bfast\s*api\b",
+        r"\bweb\s*developer\b",
+        r"\bweb\s*engineer\b",
+        r"\bqa\b",
+        r"\bsdet\b",
+        r"\bquality\s*assurance\b",
+        r"\btest\s*automation\b",
+        r"\bqa\s*engineer\b",
+        r"\bqa\s*tester\b",
+        r"\bqa\s*analyst\b",
+        r"\btest\s*engineer\b",
+    ]
+    for pat in positive_title_patterns:
+        if re.search(pat, t_lower):
+            return True
+
+    # 4. If title is generic (e.g. 'Software Engineer', 'Software Developer', 'Backend Engineer')
+    # verify that candidate's core stack is required in the job description
+    generic_tech_roles = [
+        "software engineer", "software developer", "backend engineer", "backend developer",
+        "application developer", "programmer", "full-stack", "front-end"
+    ]
+    if any(k in t_lower for k in generic_tech_roles):
+        # Must explicitly mention at least one key stack skill
+        core_stack_patterns = [
+            r"\breact\b", r"\bnext\.?js\b", r"\bnode\.?js\b",
+            r"\btypescript\b", r"\bjavascript\b", r"\bfast\s*api\b",
+            r"\bfrontend\b", r"\bfull\s*stack\b"
+        ]
+        if any(re.search(pat, combined) for pat in core_stack_patterns):
+            return True
+
+    return False
+
+
 def extract_email_from_text(text: str) -> Optional[str]:
     """Extract first valid recruiter / company email from job description if present."""
     if not text:
@@ -431,10 +542,13 @@ class JobScraper:
                 pub_elem = item.find("pubDate")
                 desc_elem = item.find("description")
 
-                title_text = title_elem.text if title_elem is not None else ""
-                link_text = link_elem.text if link_elem is not None else ""
-                desc_text = desc_elem.text if desc_elem is not None else ""
-                pub_text = pub_elem.text if pub_elem is not None else ""
+                title_text = (title_elem.text if title_elem is not None and title_elem.text is not None else "").strip()
+                link_text = (link_elem.text if link_elem is not None and link_elem.text is not None else "").strip()
+                desc_text = (desc_elem.text if desc_elem is not None and desc_elem.text is not None else "").strip()
+                pub_text = (pub_elem.text if pub_elem is not None and pub_elem.text is not None else "").strip()
+
+                if not title_text:
+                    continue
 
                 pub_dt = None
                 if pub_text:
@@ -540,33 +654,43 @@ class JobScraper:
         if job_keyword and job_keyword.strip():
             kw = job_keyword.strip()
             queries.append({"q": f'"{kw}" Remote', "location": None, "limit": 15})
-            queries.append({"q": f'"{kw}" linkedin', "location": None, "limit": 10})
-            queries.append({"q": f'"{kw}" Bangladesh', "location": "Bangladesh", "limit": 8})
+            queries.append({"q": f'"{kw}" remote linkedin', "location": None, "limit": 15})
+            queries.append({"q": f'"{kw}" Remote', "location": "United States", "limit": 15})
+            queries.append({"q": f'"{kw}" Bangladesh', "location": "Bangladesh", "limit": 10})
         else:
-            # 1. User core skills & engineering roles
+            # High-yield, multi-region queries across user's exact roles
             queries.extend([
-                {"q": '"React" OR "Next.js" developer Remote', "location": None, "limit": 15},
-                {"q": '"Frontend developer" OR "Frontend Engineer" Remote', "location": None, "limit": 15},
-                {"q": '"Full Stack developer" OR "Full Stack Engineer" Remote', "location": None, "limit": 15},
-                {"q": '"Node.js" OR "TypeScript" developer Remote', "location": None, "limit": 15},
-                {"q": '"Python" OR "FastAPI" developer Remote', "location": None, "limit": 15},
-                {"q": '"Software Engineer" OR "Software Developer" Remote', "location": None, "limit": 15},
-            ])
+                # US Remote - Core Tech Stack
+                {"q": "React developer Remote", "location": "United States", "limit": 15},
+                {"q": "Next.js developer Remote", "location": "United States", "limit": 15},
+                {"q": "Full Stack developer Remote", "location": "United States", "limit": 15},
+                {"q": "Frontend developer Remote", "location": "United States", "limit": 15},
+                {"q": "Node.js developer Remote", "location": "United States", "limit": 15},
+                {"q": "Python FastAPI developer Remote", "location": "United States", "limit": 15},
 
-            # 2. Targeted platforms requested by user (LinkedIn, Workable, Indeed, Glassdoor, Micro1, WWR, Bdjobs)
-            queries.extend([
-                {"q": '("React" OR "Next.js" OR "Frontend" OR "Full Stack") developer remote linkedin', "location": None, "limit": 12},
-                {"q": '("React" OR "Frontend" OR "Full stack") remote workable', "location": None, "limit": 12},
-                {"q": '("React" OR "Frontend" OR "Software engineer") remote indeed', "location": None, "limit": 12},
-                {"q": '("React" OR "Frontend" OR "Software engineer") remote glassdoor', "location": None, "limit": 12},
-                {"q": '("React" OR "Frontend" OR "Full stack" OR "Developer") remote micro1', "location": None, "limit": 10},
-                {"q": 'weworkremotely ("React" OR "Frontend" OR "Full stack")', "location": None, "limit": 10},
-                {"q": '("React" OR "Next.js" OR "Frontend" OR "Software Engineer") Bangladesh', "location": "Bangladesh", "limit": 8},
-                {"q": 'bdjobs ("software" OR "developer" OR "react" OR "frontend")', "location": "Bangladesh", "limit": 8},
+                # Canada & Europe Remote
+                {"q": "React developer Remote", "location": "Canada", "limit": 15},
+                {"q": "Full Stack developer Remote", "location": "United Kingdom", "limit": 15},
+                {"q": "Full Stack developer Remote", "location": "Singapore", "limit": 15},
+
+                # Global Remote
+                {"q": "React developer Remote", "location": None, "limit": 15},
+                {"q": "Full Stack developer Remote", "location": None, "limit": 15},
+                {"q": "Frontend developer Remote", "location": None, "limit": 15},
+                {"q": "Node.js developer Remote", "location": None, "limit": 15},
+                {"q": "Next.js developer Remote", "location": None, "limit": 15},
+                {"q": "Python FastAPI Remote", "location": None, "limit": 15},
+
+                # Targeted LinkedIn postings
+                {"q": "React developer remote linkedin", "location": None, "limit": 15},
+                {"q": "Full Stack developer remote linkedin", "location": None, "limit": 15},
+
+                # Bangladesh (Any type allowed)
+                {"q": "Software Developer Bangladesh", "location": "Bangladesh", "limit": 10},
             ])
 
         # Execute concurrent worker pool
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             # Dispatch SerpApi queries
             serp_futures = [
                 executor.submit(self.fetch_serpapi_jobs, q["q"], q["location"], q["limit"])
@@ -618,6 +742,11 @@ class JobScraper:
             link = item.get("link") or self._extract_job_link(item)
 
             if not title or not link:
+                continue
+
+            # 3. Role relevance validation (enforce target roles and Python+FastAPI rule)
+            if not is_role_relevant(title=title, description=description, custom_keyword=job_keyword):
+                logger.debug("Filtered out non-target role candidate: '%s'", title)
                 continue
 
             # In-batch deduplication

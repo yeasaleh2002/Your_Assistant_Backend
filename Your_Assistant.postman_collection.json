@@ -486,6 +486,72 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "08 - Custom Job Description Tailoring",
+      "item": [
+        {
+          "name": "Process Custom Job Description (With Company & Title)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_description\": \"We are seeking a Senior React Engineer with deep experience in Next.js, TypeScript, and state management.\\nRequirements:\\n- 4+ years experience with React, Next.js, Tailwind CSS, Redux/Zustand.\\n- Strong API integration with REST/GraphQL and WebSockets.\\n- Proven track record of improving web performance and Core Web Vitals.\\nSend resume to careers@technova.io.\",\n  \"job_title\": \"Senior React Engineer\",\n  \"company\": \"TechNova Corp\",\n  \"recruiter_email\": \"careers@technova.io\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/job-description/tailor",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "job-description", "tailor"]
+            },
+            "description": "Accepts raw text job description, calculates RAG match score, generates 100% ATS PDF with target job title (Yeasaleh_Resume_{company}_{title}.pdf), cold email draft, and full cover letter."
+          },
+          "response": []
+        },
+        {
+          "name": "Process Custom Job Description (No Company Name)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_description\": \"Looking for a remote FastAPI Backend Specialist to design high-throughput microservices and vector RAG agents.\\nRequired: Python, FastAPI, PostgreSQL, Docker, Redis, Celery, Vector RAG.\\nInquiries to engineering-leads@startup.io.\",\n  \"job_title\": \"FastAPI Backend Specialist\",\n  \"company\": null\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/job-description/tailor",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "job-description", "tailor"]
+            },
+            "description": "Processes raw job description when no company is provided; outputs PDF named Yeasaleh_Resume_{title}.pdf using candidate name and target title only."
+          },
+          "response": []
+        },
+        {
+          "name": "Download Tailored Resume PDF",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/resume/download/Yeasaleh_Resume_TechNova_Corp_Senior_React_Engineer.pdf",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "resume", "download", "Yeasaleh_Resume_TechNova_Corp_Senior_React_Engineer.pdf"]
+            },
+            "description": "Downloads the generated ATS-optimized PDF resume directly from the server output folder."
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
+

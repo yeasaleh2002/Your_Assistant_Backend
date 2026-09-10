@@ -5,10 +5,10 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Union
 
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.lib import colors  # type: ignore
+from reportlab.lib.pagesizes import letter  # type: ignore
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # type: ignore
+from reportlab.platypus import HRFlowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer  # type: ignore
 
 from app.llm_manager import generate_ai_response
 
@@ -136,8 +136,8 @@ CANDIDATE BASE RESUME:
 
 MANDATORY INSTRUCTIONS:
 1. Maintain the EXACT section structure and formatting from the candidate's base resume:
-   - Header (Candidate Name, Role, Location, Phone, Email, LinkedIn, GitHub, Portfolio)
-   - Professional Summary
+   - Header: Use '# Yeasaleh | {job_title}' (DO NOT use 'Software Developer' if the target role title is '{job_title}'). Followed by Location, Phone, Email, LinkedIn, GitHub, Portfolio.
+   - Professional Summary: Align the summary opening directly to the target role of '{job_title}'.
    - Technical Skills (Front-End, Back-End, AI & Automation Tools)
    - Professional Experience (Nurix Hive, Manaknight Digital, MedLink Healthcare Private Limited)
    - Mentorship Experience (Sadhinota Camp)
@@ -161,12 +161,12 @@ MANDATORY INSTRUCTIONS:
    Update and re-order the skills in each category (Front-End, Back-End, AI & Automation Tools) to highlight the technologies most relevant to the target job description.
 
 5. FORMATTING OUTPUT (Standard ATS Markdown):
-   # Yeasaleh | Software Developer
+   # Yeasaleh | {job_title}
    Dhaka, Bangladesh | +8801735782467 | yeasaleh.contact@gmail.com
    https://www.linkedin.com/in/yea-saleh | https://github.com/yeasaleh2002 | https://yeasaleh.xyz
 
    ## Professional Summary
-   [Tailored 3-4 sentence summary emphasizing background matching the target role, adhering strictly to USA English]
+   [Tailored 3-4 sentence summary emphasizing background as a {job_title} matching the target role, adhering strictly to USA English]
 
    ## Technical Skills
    **Front-End:** [Tailored front-end skills matching the job description]
@@ -218,11 +218,23 @@ CRITICAL CONSTRAINT:
         full_user_prompt = f"{WORLD_CLASS_ATS_PROMPT}\n\n{user_prompt.strip()}"
 
         logger.info("Requesting ATS resume tailoring for '%s%s'...", job_title, company_info)
-        tailored_markdown = generate_ai_response(
-            prompt=full_user_prompt.strip(),
-            system_prompt=STRICT_ATS_PROMPT,
-        )
-        return tailored_markdown.strip()
+        try:
+            tailored_markdown = generate_ai_response(
+                prompt=full_user_prompt.strip(),
+                system_prompt=STRICT_ATS_PROMPT,
+            )
+            return tailored_markdown.strip()
+        except Exception as exc:
+            logger.warning(
+                "LLM generation failed in tailor_resume (%s). Using high-fidelity base resume fallback with target role '%s'.",
+                exc,
+                job_title,
+            )
+            fallback = resume_content.replace("Yeasaleh | Software Developer", f"Yeasaleh | {job_title}")
+            fallback = fallback.replace("Software Developer specializing", f"{job_title} specializing")
+            if not fallback.strip().startswith("# "):
+                fallback = f"# {fallback}"
+            return fallback.strip()
 
     def generate_pdf(
         self,
@@ -348,7 +360,14 @@ CRITICAL CONSTRAINT:
             # Header 2: Section Titles
             if line.startswith("## "):
                 seen_first_section = True
-                sec_text = format_markdown_for_reportlab(line[3:].strip())
+                raw_title = line[3:].strip()
+
+                # User requirement: Put mentorship experience cleanly at the top of the next page
+                # to prevent the section heading or partial bullets from splitting awkwardly across pages
+                if "mentor" in raw_title.lower():
+                    story.append(PageBreak())
+
+                sec_text = format_markdown_for_reportlab(raw_title)
                 story.append(Paragraph(sec_text, heading_style))
                 story.append(
                     HRFlowable(
@@ -418,15 +437,15 @@ CRITICAL CONSTRAINT:
         )
 
         # Step 2: Generate PDF
-        clean_company = re.sub(r"[^a-zA-Z0-9]", "_", company or "Company").strip("_")
-        clean_title = re.sub(r"[^a-zA-Z0-9]", "_", job_title).strip("_")
+        clean_title = re.sub(r"[^a-zA-Z0-9]+", "_", job_title or "Engineer").strip("_")
+        clean_company = re.sub(r"[^a-zA-Z0-9]+", "_", company).strip("_") if company and company.strip() else ""
         if output_filename:
             out_p = Path(output_filename)
             if out_p.is_absolute() or len(out_p.parts) > 1:
                 pdf_path = out_p
                 fname = out_p.name
             else:
-                raw = str(output_filename)
+                raw = output_filename
                 if raw.startswith("Resume_"):
                     fname = f"Yeasaleh_{raw}"
                 elif not raw.startswith("Yeasaleh_Resume"):
@@ -435,7 +454,10 @@ CRITICAL CONSTRAINT:
                     fname = raw
                 pdf_path = OUTPUT_DIR / fname
         else:
-            fname = f"Yeasaleh_Resume_{clean_company}_{clean_title}.pdf"
+            if clean_company and clean_company.lower() not in ["none", "null", "company"]:
+                fname = f"Yeasaleh_Resume_{clean_company}_{clean_title}.pdf"
+            else:
+                fname = f"Yeasaleh_Resume_{clean_title}.pdf"
             pdf_path = OUTPUT_DIR / fname
 
         generated_path = self.generate_pdf(tailored_markdown, pdf_path)

@@ -1,6 +1,7 @@
 import logging
 import os
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 import chromadb
@@ -288,3 +289,46 @@ class RAGEngine:
             pass
 
         return matched_jobs
+
+    def calculate_match_score(
+        self,
+        job_description: str,
+        job_title: str = "",
+        base_resume_text: Optional[str] = None,
+    ) -> float:
+        """
+        Calculate semantic vector cosine similarity match percentage (0.0% to 100.0%)
+        between candidate's resume and an arbitrary job description text.
+        """
+        resume_text = base_resume_text or self.load_resume()
+        doc_text = f"{job_title}. {job_description}" if job_title else job_description
+
+        try:
+            # Embed both texts using the high-speed local FastEmbed ONNX embedding function
+            embeddings = self.embedding_function([resume_text, doc_text])
+            if len(embeddings) < 2:
+                return 75.0
+
+            vec1 = np.array(embeddings[0], dtype=float)
+            vec2 = np.array(embeddings[1], dtype=float)
+
+            norm1 = np.linalg.norm(vec1)
+            norm2 = np.linalg.norm(vec2)
+
+            if norm1 == 0 or norm2 == 0:
+                return 70.0
+
+            cosine_sim = float(np.dot(vec1, vec2) / (norm1 * norm2))
+            score_pct = round(cosine_sim * 100.0, 2)
+            return max(0.0, min(100.0, score_pct))
+        except Exception as exc:
+            logger.warning("Error calculating semantic match score via FastEmbed: %s", exc)
+            # Fallback keyword overlap heuristic
+            resume_lower = resume_text.lower()
+            jd_words = set(re.findall(r"\b[a-zA-Z]{3,}\b", doc_text.lower()))
+            if not jd_words:
+                return 70.0
+            hits = sum(1 for w in jd_words if w in resume_lower)
+            ratio = hits / len(jd_words)
+            return round(min(95.0, max(50.0, ratio * 150.0)), 2)
+
