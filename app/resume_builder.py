@@ -6,9 +6,12 @@ import re
 from typing import Any, Dict, List, Optional, Union
 
 from reportlab.lib import colors  # type: ignore
-from reportlab.lib.pagesizes import letter  # type: ignore
+from reportlab.lib.pagesizes import A4, letter  # type: ignore
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # type: ignore
-from reportlab.platypus import HRFlowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer  # type: ignore
+from reportlab.pdfbase import pdfmetrics  # type: ignore
+from reportlab.pdfbase.pdfmetrics import registerFontFamily  # type: ignore
+from reportlab.pdfbase.ttfonts import TTFont  # type: ignore
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer  # type: ignore
 
 from app.llm_manager import generate_ai_response
 
@@ -17,6 +20,90 @@ logger = logging.getLogger("your_assistant.resume_builder")
 is_vercel = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 DEFAULT_RESUME_FILE = Path("data") / "resume.txt"
 OUTPUT_DIR = Path("/tmp/output") if is_vercel else Path("output")
+
+_CALIBRI_REGISTERED = False
+_PRIMARY_FONT = "Helvetica"
+_PRIMARY_BOLD_FONT = "Helvetica-Bold"
+_PRIMARY_ITALIC_FONT = "Helvetica-Oblique"
+
+
+def get_calibri_font_family() -> tuple[str, str, str]:
+    """
+    Register Calibri TrueType font family with ReportLab.
+    Searches repository data/fonts, system fonts, and falls back gracefully
+    to standard Helvetica if font files are absent.
+    """
+    global _CALIBRI_REGISTERED, _PRIMARY_FONT, _PRIMARY_BOLD_FONT, _PRIMARY_ITALIC_FONT
+    if _CALIBRI_REGISTERED:
+        return _PRIMARY_FONT, _PRIMARY_BOLD_FONT, _PRIMARY_ITALIC_FONT
+
+    search_dirs = [
+        Path(__file__).resolve().parent.parent / "data" / "fonts",
+        Path("data") / "fonts",
+        Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts",
+        Path("/usr/share/fonts/truetype"),
+        Path("/usr/share/fonts/truetype/msttcorefonts"),
+    ]
+
+    calibri_reg: Optional[Path] = None
+    calibri_b: Optional[Path] = None
+    calibri_i: Optional[Path] = None
+    calibri_bi: Optional[Path] = None
+
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        reg_candidates = list(d.glob("[cC][aA][lL][iI][bB][rR][iI].[tT][tT][fF]"))
+        bold_candidates = list(d.glob("[cC][aA][lL][iI][bB][rR][iI][bB].[tT][tT][fF]"))
+        italic_candidates = list(d.glob("[cC][aA][lL][iI][bB][rR][iI][iI].[tT][tT][fF]"))
+        bi_candidates = list(d.glob("[cC][aA][lL][iI][bB][rR][iI][zZ].[tT][tT][fF]"))
+
+        if reg_candidates and not calibri_reg:
+            calibri_reg = reg_candidates[0]
+        if bold_candidates and not calibri_b:
+            calibri_b = bold_candidates[0]
+        if italic_candidates and not calibri_i:
+            calibri_i = italic_candidates[0]
+        if bi_candidates and not calibri_bi:
+            calibri_bi = bi_candidates[0]
+
+    if calibri_reg and calibri_reg.exists():
+        try:
+            pdfmetrics.registerFont(TTFont("Calibri", str(calibri_reg)))
+            b_font = str(calibri_b) if calibri_b and calibri_b.exists() else str(calibri_reg)
+            i_font = str(calibri_i) if calibri_i and calibri_i.exists() else str(calibri_reg)
+            bi_font = str(calibri_bi) if calibri_bi and calibri_bi.exists() else b_font
+
+            pdfmetrics.registerFont(TTFont("Calibri-Bold", b_font))
+            pdfmetrics.registerFont(TTFont("Calibri-Italic", i_font))
+            pdfmetrics.registerFont(TTFont("Calibri-BoldItalic", bi_font))
+
+            registerFontFamily(
+                "Calibri",
+                normal="Calibri",
+                bold="Calibri-Bold",
+                italic="Calibri-Italic",
+                boldItalic="Calibri-BoldItalic",
+            )
+            _PRIMARY_FONT = "Calibri"
+            _PRIMARY_BOLD_FONT = "Calibri-Bold"
+            _PRIMARY_ITALIC_FONT = "Calibri-Italic"
+            _CALIBRI_REGISTERED = True
+            logger.info("Successfully registered Calibri font family from: %s", calibri_reg)
+        except Exception as err:
+            logger.warning("Failed to register Calibri TTFont (%s). Falling back to Helvetica.", err)
+            _PRIMARY_FONT = "Helvetica"
+            _PRIMARY_BOLD_FONT = "Helvetica-Bold"
+            _PRIMARY_ITALIC_FONT = "Helvetica-Oblique"
+            _CALIBRI_REGISTERED = True
+    else:
+        logger.warning("Calibri font file not found in search paths. Falling back to Helvetica.")
+        _PRIMARY_FONT = "Helvetica"
+        _PRIMARY_BOLD_FONT = "Helvetica-Bold"
+        _PRIMARY_ITALIC_FONT = "Helvetica-Oblique"
+        _CALIBRI_REGISTERED = True
+
+    return _PRIMARY_FONT, _PRIMARY_BOLD_FONT, _PRIMARY_ITALIC_FONT
 
 # Prompt Constraint for ATS compliance and anti-hallucination
 STRICT_ATS_PROMPT = (
@@ -243,14 +330,22 @@ CRITICAL CONSTRAINT:
     ) -> Path:
         """
         Convert structured Markdown resume into an ATS-optimized, publication-ready PDF
-        using ReportLab. All text is strictly 100% black color for maximum ATS parsing fidelity.
+        matching the exact typography and format of data/Yeasaleh_Resume.docx:
+        - Font family: Calibri
+        - Candidate Name & Dynamic Target Role: 22 pt Bold
+        - Section headings: 18 pt Bold
+        - Experience company name: 14 pt Bold
+        - Normal text (Summary, Skills, Bullets, Meta, Education, Language): 12 pt
+        - Strict 100% black text for maximum ATS scannability
         """
         out_file = Path(output_path)
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
+        normal_font, bold_font, italic_font = get_calibri_font_family()
+
         doc = SimpleDocTemplate(
             str(out_file),
-            pagesize=letter,
+            pagesize=A4,     # Standard A4 matching data/Yeasaleh_Resume.docx
             leftMargin=36,   # 0.5 inch margins for ATS scannability
             rightMargin=36,
             topMargin=36,
@@ -259,20 +354,16 @@ CRITICAL CONSTRAINT:
 
         styles = getSampleStyleSheet()
 
-        # Custom Typography and Color Palette - STRICT ALL-BLACK TEXT FOR ATS COMPATIBILITY
-        primary_color = colors.black      # 100% Black (#000000)
-        secondary_color = colors.black    # 100% Black (#000000)
-        text_color = colors.black         # 100% Black (#000000)
-        meta_color = colors.black         # 100% Black (#000000)
-        line_color = colors.black         # 100% Black (#000000)
+        # Strict 100% black text for ATS parsing fidelity
+        text_color = colors.black
 
         name_style = ParagraphStyle(
             "ResumeName",
             parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=16,
-            leading=20,
-            textColor=primary_color,
+            fontName=bold_font,
+            fontSize=22,
+            leading=26,
+            textColor=text_color,
             alignment=0,
             spaceAfter=3,
         )
@@ -280,34 +371,33 @@ CRITICAL CONSTRAINT:
         contact_style = ParagraphStyle(
             "ResumeContact",
             parent=styles["Normal"],
-            fontName="Helvetica",
-            fontSize=8.5,
-            leading=11.5,
-            textColor=meta_color,
+            fontName=normal_font,
+            fontSize=12,
+            leading=15,
+            textColor=text_color,
             spaceAfter=2,
         )
 
         heading_style = ParagraphStyle(
             "ResumeSectionHeading",
             parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=10.5,
-            leading=13.5,
-            textColor=secondary_color,
-            spaceBefore=7,
-            spaceAfter=2,
-            textTransform="uppercase",
+            fontName=bold_font,
+            fontSize=18,
+            leading=22,
+            textColor=text_color,
+            spaceBefore=10,
+            spaceAfter=4,
             keepWithNext=True,
         )
 
-        subheading_style = ParagraphStyle(
-            "ResumeSubheading",
+        company_role_style = ParagraphStyle(
+            "ResumeCompanyRole",
             parent=styles["Normal"],
-            fontName="Helvetica-Bold",
-            fontSize=9.5,
-            leading=12.5,
-            textColor=primary_color,
-            spaceBefore=4,
+            fontName=normal_font,
+            fontSize=12,
+            leading=16,
+            textColor=text_color,
+            spaceBefore=6,
             spaceAfter=1,
             keepWithNext=True,
         )
@@ -315,10 +405,10 @@ CRITICAL CONSTRAINT:
         role_meta_style = ParagraphStyle(
             "ResumeRoleMeta",
             parent=styles["Normal"],
-            fontName="Helvetica-Oblique",
-            fontSize=8.5,
-            leading=11,
-            textColor=meta_color,
+            fontName=italic_font,
+            fontSize=12,
+            leading=15,
+            textColor=text_color,
             spaceAfter=3,
             keepWithNext=True,
         )
@@ -326,9 +416,9 @@ CRITICAL CONSTRAINT:
         body_style = ParagraphStyle(
             "ResumeBody",
             parent=styles["Normal"],
-            fontName="Helvetica",
-            fontSize=8.5,
-            leading=12,
+            fontName=normal_font,
+            fontSize=12,
+            leading=15.5,
             textColor=text_color,
             spaceAfter=3,
         )
@@ -336,10 +426,12 @@ CRITICAL CONSTRAINT:
         bullet_style = ParagraphStyle(
             "ResumeBullet",
             parent=body_style,
-            leftIndent=12,
-            firstLineIndent=-8,
-            spaceAfter=2,
-            leading=11.5,
+            fontName=normal_font,
+            fontSize=12,
+            leading=15,
+            leftIndent=14,
+            firstLineIndent=-10,
+            spaceAfter=2.5,
         )
 
         story: List[Any] = []
@@ -351,39 +443,49 @@ CRITICAL CONSTRAINT:
             if not line:
                 continue
 
-            # Header 1: Candidate Name & Title
-            if line.startswith("# "):
-                name_text = format_markdown_for_reportlab(line[2:].strip())
-                story.append(Paragraph(name_text, name_style))
+            # Header 1: Candidate Name & Dynamic Role
+            # (matches "# Yeasaleh | Title" or "Yeasaleh | Title" before any section)
+            if line.startswith("# ") or (not seen_first_section and line.startswith("Yeasaleh | ")):
+                header_raw = line[2:].strip() if line.startswith("# ") else line
+                name_text = format_markdown_for_reportlab(header_raw)
+                story.append(Paragraph(f"<b>{name_text}</b>", name_style))
                 continue
 
-            # Header 2: Section Titles
-            if line.startswith("## "):
+            # Section Titles: ## Title or recognized exact section name
+            is_sec_heading = line.startswith("## ") or line in [
+                "Professional Summary",
+                "Technical Skills",
+                "Professional Experience",
+                "Mentorship Experience",
+                "Education",
+                "Language",
+            ]
+            if is_sec_heading:
                 seen_first_section = True
-                raw_title = line[3:].strip()
-
-                # User requirement: Put mentorship experience cleanly at the top of the next page
-                # to prevent the section heading or partial bullets from splitting awkwardly across pages
-                if "mentor" in raw_title.lower():
-                    story.append(PageBreak())
-
+                raw_title = line[3:].strip() if line.startswith("## ") else line
                 sec_text = format_markdown_for_reportlab(raw_title)
-                story.append(Paragraph(sec_text, heading_style))
-                story.append(
-                    HRFlowable(
-                        width="100%",
-                        thickness=0.5,
-                        color=line_color,
-                        spaceBefore=1,
-                        spaceAfter=4,
-                    )
-                )
+                story.append(Paragraph(f"<b>{sec_text}</b>", heading_style))
                 continue
 
-            # Header 3: Subheadings (Company / Role / Project)
-            if line.startswith("### "):
-                sub_text = format_markdown_for_reportlab(line[4:].strip())
-                story.append(Paragraph(sub_text, subheading_style))
+            # Subheadings (Company / Role / Project): ### Company | Role or recognized company line
+            is_company_subheading = line.startswith("### ") or (
+                seen_first_section
+                and " | " in line
+                and any(c in line for c in ["Nurix Hive", "Manaknight", "MedLink", "Sadhinota"])
+            )
+            if is_company_subheading:
+                raw_sub = line[4:].strip() if line.startswith("### ") else line
+                # Check for "Company | Role" structure
+                if " | " in raw_sub:
+                    parts = raw_sub.split(" | ", 1)
+                    comp_name = format_markdown_for_reportlab(parts[0].strip())
+                    role_name = format_markdown_for_reportlab(parts[1].strip())
+                    # 14 pt bold for company name, 12 pt for role
+                    formatted_sub = f'<font size="14"><b>{comp_name}</b></font> | <font size="12">{role_name}</font>'
+                else:
+                    sub_formatted = format_markdown_for_reportlab(raw_sub)
+                    formatted_sub = f'<font size="14"><b>{sub_formatted}</b></font>'
+                story.append(Paragraph(formatted_sub, company_role_style))
                 continue
 
             # Contact line / metadata below name before the first section
@@ -392,22 +494,35 @@ CRITICAL CONSTRAINT:
                 story.append(Paragraph(contact_text, contact_style))
                 continue
 
-            # Italic Role metadata (Location, Dates) e.g. *Dhaka, Bangladesh...* or line with dates
-            if (line.startswith("*") and line.endswith("*")) or ("|" in line and any(yr in line for yr in ["2022", "2023", "2024", "2025", "Present"])):
+            # Italic Role metadata (Location, Dates) e.g. *Dhaka, Bangladesh...* or line with dates/location
+            if (
+                (line.startswith("*") and line.endswith("*"))
+                or ("|" in line and any(yr in line for yr in ["2022", "2023", "2024", "2025", "Present"]))
+                or line.startswith("Dhaka, Bangladesh")
+                or line.startswith("Toronto, Canada")
+                or line.startswith("Hyderabad, India")
+            ):
                 clean_meta = line.strip("*").strip()
                 meta_text = format_markdown_for_reportlab(clean_meta)
-                story.append(Paragraph(meta_text, role_meta_style))
+                story.append(Paragraph(f"<i>{meta_text}</i>", role_meta_style))
                 continue
 
             # Bullet points
-            if line.startswith("- ") or line.startswith("* "):
-                bullet_content = format_markdown_for_reportlab(line[2:].strip())
+            if line.startswith("- ") or line.startswith("* ") or line.startswith("• "):
+                raw_bullet = line[2:].strip() if (line.startswith("- ") or line.startswith("* ")) else line[1:].strip()
+                bullet_content = format_markdown_for_reportlab(raw_bullet)
                 formatted_bullet = f"&bull;&nbsp; {bullet_content}"
                 story.append(Paragraph(formatted_bullet, bullet_style))
                 continue
 
-            # Regular paragraph text (Summary, Skills lines, etc.)
-            para_text = format_markdown_for_reportlab(line)
+            # Regular paragraph text (Summary, Skills lines, Education details, Language)
+            para_line = line
+            for skill_cat in ["Front-End:", "Back-End:", "AI & Automation Tools:"]:
+                if para_line.startswith(skill_cat) and not para_line.startswith(f"**{skill_cat}"):
+                    para_line = f"**{skill_cat}** {para_line[len(skill_cat):].strip()}"
+                    break
+
+            para_text = format_markdown_for_reportlab(para_line)
             story.append(Paragraph(para_text, body_style))
 
         # Build document

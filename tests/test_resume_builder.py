@@ -204,3 +204,60 @@ def test_yeasaleh_resume_filename_default(sample_resume_file):
         assert result["filename"] == "Yeasaleh_Resume_Google_Full_Stack_Engineer.pdf"
 
 
+def test_calibri_typography_and_font_sizes(tmp_path):
+    """Verify that Calibri font family is registered and PDF generation matches Yeasaleh_Resume specs."""
+    from app.resume_builder import get_calibri_font_family, ResumeBuilder
+
+    normal_font, bold_font, italic_font = get_calibri_font_family()
+    assert normal_font == "Calibri"
+    assert bold_font == "Calibri-Bold"
+    assert italic_font == "Calibri-Italic"
+
+    builder = ResumeBuilder()
+    markdown_content = """# Yeasaleh | Senior Frontend Developer
+Dhaka, Bangladesh | +8801735782467 | yeasaleh.contact@gmail.com
+https://www.linkedin.com/in/yea-saleh | https://github.com/yeasaleh2002 | https://yeasaleh.xyz
+
+## Professional Summary
+Senior Frontend Developer specializing in architecting scalable Next.js and TypeScript web applications.
+
+## Technical Skills
+**Front-End:** React.js, Next.js, TypeScript, Tailwind CSS
+**Back-End:** Node.js, Express.js, PostgreSQL
+**AI & Automation Tools:** Claude, Antigravity, GitHub Copilot
+
+## Professional Experience
+
+### Nurix Hive | Senior Frontend Developer
+*Dhaka, Bangladesh (Remote) | August 2025 – Present*
+- Architected modular frontend systems that boosted rendering frame rates by 40% using GSAP.
+- Engineered reusable components reducing layout shifts to a 0.01 CLS score across 4K displays.
+
+## Mentorship Experience
+
+### Sadhinota Camp | Support Mentor (Voluntary)
+*Dhaka, Bangladesh | September 2024 – April 2025*
+- Mentored 45+ students in full-stack architecture, improving code quality by 40%.
+
+## Education
+B.Sc. in Computer Science & Engineering (2023 - Present)
+City University, Bangladesh
+
+## Language
+Bangla (Native), English (Professional Working Proficiency)
+"""
+
+    out_file = tmp_path / "Yeasaleh_Resume_Senior_Frontend_Developer.pdf"
+    pdf_path = builder.generate_pdf(markdown_content, out_file)
+
+    assert pdf_path.exists()
+    assert pdf_path.stat().st_size > 1000
+
+    with open(pdf_path, "rb") as f:
+        content = f.read()
+    assert content.startswith(b"%PDF-")
+    # Verify Calibri font is embedded in the PDF
+    assert b"Calibri" in content
+
+
+
