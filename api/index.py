@@ -31,3 +31,4 @@ except Exception as e:
         )
 
     handler = fallback_app
+    app = fallback_app
