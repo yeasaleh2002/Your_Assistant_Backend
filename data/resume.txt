@@ -12,7 +12,7 @@ AI & Automation Tools: Firebase, Vite, Webpack, Babel, JWT, Jenkins, Jira, Trell
 
 Professional Experience
 
-Nurix Hive | Software Engineer
+Nurix Hive | Software Engineer (Contractual)
 Dhaka, Bangladesh (Remote) | August 2025 – Present
 - Architected modular backend systems and reusable Node.js packages, integrating custom AI data pipelines that automated 85% of repetitive workflows and sped up delivery cycles by 35%.
 - Established secure server infrastructure using Node.js and Express with Supabase data hydration, accelerating API response times by 25% and sustaining 99.9% uptime.
