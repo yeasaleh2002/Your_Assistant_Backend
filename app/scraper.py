@@ -50,14 +50,16 @@ DEFAULT_TARGET_ROLES: List[str] = [
 ]
 
 def get_target_roles() -> List[str]:
-    """Retrieve target roles from TARGET_ROLES environment variable or default list."""
+    """
+    Retrieve target roles from TARGET_ROLES environment variable or default list.
+    Safely handles whitespace, quotes, and empty entries.
+    """
     env_roles = os.getenv("TARGET_ROLES", "")
     if env_roles and env_roles.strip():
-        cleaned = env_roles.strip().strip('"').strip("'")
-        roles = [r.strip() for r in cleaned.split(",") if r.strip()]
+        roles = [r.strip().strip('"\'').strip() for r in env_roles.split(",") if r.strip().strip('"\'').strip()]
         if roles:
             return roles
-    return DEFAULT_TARGET_ROLES
+    return list(DEFAULT_TARGET_ROLES)
 
 # Common job aggregator domains where domain is NOT the company's own site
 AGGREGATOR_DOMAINS = {
@@ -338,6 +340,13 @@ def is_role_relevant(title: str, description: str = "", custom_keyword: Optional
         if kw_clean in t_lower or kw_clean in combined:
             return True
         if any(term in t_lower for term in ["engineer", "developer", "architect", "lead", "old job", "brand new job", "job"]):
+            return True
+
+    # 1b. Check against all configured target roles from .env
+    target_roles = get_target_roles()
+    for tr in target_roles:
+        tr_lower = tr.lower().strip()
+        if tr_lower and (tr_lower in t_lower or tr_lower in combined):
             return True
 
     # 2. Strict Python rule: Python jobs ONLY if FastAPI is present
@@ -704,50 +713,30 @@ class JobScraper:
 
         # Target query tasks to execute concurrently
         queries: List[Dict[str, Any]] = []
+        role_fetch_counts: Dict[str, int] = {}
 
         if job_keyword and job_keyword.strip():
             kw = job_keyword.strip()
-            queries.append({"q": f'"{kw}" Remote', "location": None, "limit": 15})
-            queries.append({"q": f'"{kw}" remote linkedin', "location": None, "limit": 15})
-            queries.append({"q": f'"{kw}" Remote', "location": "United States", "limit": 15})
-            queries.append({"q": f'"{kw}" Bangladesh', "location": "Bangladesh", "limit": 10})
+            role_fetch_counts[kw] = 0
+            queries.append({"q": f'"{kw}" Remote', "location": None, "limit": 15, "role": kw})
+            queries.append({"q": f'"{kw}" remote linkedin', "location": None, "limit": 15, "role": kw})
+            queries.append({"q": f'"{kw}" Remote', "location": "United States", "limit": 15, "role": kw})
+            queries.append({"q": f'"{kw}" Bangladesh', "location": "Bangladesh", "limit": 10, "role": kw})
         else:
-            # High-yield, multi-region queries across user's exact roles
-            queries.extend([
-                # US Remote - Core Tech Stack
-                {"q": "React developer Remote", "location": "United States", "limit": 15},
-                {"q": "Next.js developer Remote", "location": "United States", "limit": 15},
-                {"q": "Full Stack developer Remote", "location": "United States", "limit": 15},
-                {"q": "Frontend developer Remote", "location": "United States", "limit": 15},
-                {"q": "Node.js developer Remote", "location": "United States", "limit": 15},
-                {"q": "Python FastAPI developer Remote", "location": "United States", "limit": 15},
-
-                # Canada & Europe Remote
-                {"q": "React developer Remote", "location": "Canada", "limit": 15},
-                {"q": "Full Stack developer Remote", "location": "United Kingdom", "limit": 15},
-                {"q": "Full Stack developer Remote", "location": "Singapore", "limit": 15},
-
-                # Global Remote
-                {"q": "React developer Remote", "location": None, "limit": 15},
-                {"q": "Full Stack developer Remote", "location": None, "limit": 15},
-                {"q": "Frontend developer Remote", "location": None, "limit": 15},
-                {"q": "Node.js developer Remote", "location": None, "limit": 15},
-                {"q": "Next.js developer Remote", "location": None, "limit": 15},
-                {"q": "Python FastAPI Remote", "location": None, "limit": 15},
-
-                # Targeted LinkedIn postings
-                {"q": "React developer remote linkedin", "location": None, "limit": 15},
-                {"q": "Full Stack developer remote linkedin", "location": None, "limit": 15},
-
-                # Bangladesh (Any type allowed)
-                {"q": "Software Developer Bangladesh", "location": "Bangladesh", "limit": 10},
-            ])
+            target_roles = get_target_roles()
+            for r in target_roles:
+                role_fetch_counts[r] = 0
+                queries.append({"q": f'"{r}" Remote', "location": None, "limit": 15, "role": r})
+                queries.append({"q": f'"{r}" remote linkedin', "location": None, "limit": 15, "role": r})
+                queries.append({"q": f'"{r}" Remote', "location": "United States", "limit": 15, "role": r})
+            # Multi-region and Bangladesh feeds
+            queries.append({"q": "Software Developer Bangladesh", "location": "Bangladesh", "limit": 10, "role": "Bangladesh General"})
 
         # Execute concurrent worker pool
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            # Dispatch SerpApi queries
+            # Dispatch SerpApi queries with role tagging
             serp_futures = [
-                executor.submit(self.fetch_serpapi_jobs, q["q"], q["location"], q["limit"])
+                executor.submit(lambda q_spec=q: (q_spec.get("role", q_spec["q"]), self.fetch_serpapi_jobs(q_spec["q"], q_spec["location"], q_spec["limit"])))
                 for q in queries
             ]
             # Dispatch Direct Feeds
@@ -757,22 +746,31 @@ class JobScraper:
             # Collect SerpApi results
             for future in concurrent.futures.as_completed(serp_futures):
                 try:
-                    results = future.result()
+                    q_role, results = future.result()
                     if results:
                         raw_items.extend(results)
+                        role_fetch_counts[q_role] = role_fetch_counts.get(q_role, 0) + len(results)
                 except Exception as exc:
                     logger.debug("Worker task exception: %s", exc)
 
             # Collect direct feed results
             try:
-                raw_items.extend(wwr_future.result())
+                wwr_items = wwr_future.result()
+                raw_items.extend(wwr_items)
+                role_fetch_counts["WeWorkRemotely Feed"] = len(wwr_items)
             except Exception as exc:
                 logger.debug("WWR collection error: %s", exc)
 
             try:
-                raw_items.extend(remoteco_future.result())
+                remoteco_items = remoteco_future.result()
+                raw_items.extend(remoteco_items)
+                role_fetch_counts["Remote.co Feed"] = len(remoteco_items)
             except Exception as exc:
                 logger.debug("Remote.co collection error: %s", exc)
+
+        # Log per-role harvest numbers
+        for role_name, count in role_fetch_counts.items():
+            logger.info("[INFO] Fetched %d jobs for role: %s", count, role_name)
 
         logger.info("Total raw candidate items harvested: %d", len(raw_items))
 

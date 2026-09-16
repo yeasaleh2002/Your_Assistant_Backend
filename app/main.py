@@ -63,16 +63,18 @@ from app.models import (
     JobStatusEnum,
     JobUpdateStatus,
 )
-from app.rag_engine import MatchedJob, RAGEngine
+from app.rag_engine import MatchedJob, RAGEngine, evaluate_job_match_with_llm, get_min_match_score
 from app.resume_builder import ResumeBuilder
-from app.scraper import PRIMARY_KEYWORDS, JobScraper, ScrapedJob
+from app.scraper import PRIMARY_KEYWORDS, JobScraper, ScrapedJob, get_target_roles
 
 # Setup structured logging
+LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL, logging.DEBUG),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("your_assistant")
+logger.setLevel(getattr(logging, LOG_LEVEL, logging.DEBUG))
 
 # Rate Limiter Configuration (Strict per-IP throttling to mitigate bot scraping and brute-force attacks)
 limiter = Limiter(
@@ -81,20 +83,68 @@ limiter = Limiter(
     headers_enabled=False,
 )
 
-
 # Default match score threshold from environment
-DEFAULT_MATCH_SCORE = float(os.getenv("MIN_MATCH_SCORE", "55.0"))
+DEFAULT_MATCH_SCORE = get_min_match_score()
+
+
+def save_or_update_matched_job(db: Session, job: MatchedJob, today: Optional[date] = None) -> Optional[Job]:
+    """
+    Save or update a single matched job record with isolated transaction safety.
+    Logs [SUCCESS] or [ERROR] per system specification.
+    """
+    if today is None:
+        today = date.today()
+
+    target_id = getattr(job, "id", None) or getattr(job, "job_link", "unknown")
+    try:
+        existing = db.query(Job).filter(Job.link == job.job_link).first()
+        if existing:
+            existing.title = job.title
+            existing.company = job.company
+            existing.match_score = job.match_score
+            existing.scraped_date = today
+            if hasattr(job, "description") and job.description:
+                existing.description = job.description
+            if hasattr(job, "career_page_link") and job.career_page_link:
+                existing.career_page_link = job.career_page_link
+            if hasattr(job, "location") and job.location:
+                existing.location = job.location
+            target_record = existing
+        else:
+            target_record = Job(
+                title=job.title,
+                company=job.company,
+                link=job.job_link,
+                career_page_link=getattr(job, "career_page_link", None),
+                match_score=job.match_score,
+                recruiter_email=getattr(job, "recruiter_email", None),
+                description=getattr(job, "description", None),
+                location=getattr(job, "location", "Remote") or "Remote",
+                status=JobStatus.Pending,
+                scraped_date=today,
+            )
+            db.add(target_record)
+
+        db.commit()
+        db.refresh(target_record)
+        logger.info(f"[SUCCESS] Saved job ID {target_record.id} to Database.")
+        return target_record
+    except Exception as exc:
+        db.rollback()
+        logger.error(f"[ERROR] Database save failed for job ID {target_id}: {str(exc)}")
+        return None
 
 
 def run_daily_job_search_pipeline(job_keyword: Optional[str] = None) -> Dict[str, Any]:
     """
     Automated background pipeline executed daily:
-    1. Scrapes job listings via concurrent multi-source scraper (skills & platform targets).
-    2. Runs ChromaDB + FastEmbed vector RAG engine against base resume (cutoff >= 55%).
+    1. Scrapes job listings via concurrent multi-source scraper across TARGET_ROLES.
+    2. Runs ChromaDB + FastEmbed vector RAG engine against base resume (filtered by MIN_MATCH_SCORE).
     3. Persists qualified opportunities into Job table with scraped_date = date.today().
     4. Cleans up stale records older than 7 days.
     """
-    logger.info("Executing scheduled daily automated job search & RAG pipeline...")
+    min_score = get_min_match_score()
+    logger.info("Executing scheduled daily automated job search & RAG pipeline (min_score=%.1f)...", min_score)
     db = SessionLocal()
     try:
         scraper = JobScraper()
@@ -108,36 +158,19 @@ def run_daily_job_search_pipeline(job_keyword: Optional[str] = None) -> Dict[str
             pruned = delete_records_older_than(days=7, db=db)
             return {"scraped": 0, "matched": 0, "saved": 0, "pruned": pruned}
 
-        # Step 2: Vector RAG matching against resume (cutoff >= 55%)
-        matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=DEFAULT_MATCH_SCORE)
-        logger.info("RAG Engine qualified %d jobs exceeding >=%.1f%% match score.", len(matched_jobs), DEFAULT_MATCH_SCORE)
+        # Step 2: Vector RAG matching against resume (cutoff >= MIN_MATCH_SCORE)
+        matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=min_score)
+        logger.info("RAG Engine qualified %d jobs exceeding >=%.1f%% match score.", len(matched_jobs), min_score)
 
-
-        # Step 3: Persist matched opportunities
+        # Step 3: Persist matched opportunities with isolated transaction safety
         today = date.today()
         saved_count = 0
         for m in matched_jobs:
-            existing = db.query(Job).filter(Job.link == m.job_link).first()
-            if not existing:
-                db_entry = Job(
-                    title=m.title,
-                    company=m.company,
-                    link=m.job_link,
-                    career_page_link=m.career_page_link,
-                    match_score=m.match_score,
-                    recruiter_email=getattr(m, "recruiter_email", None),
-                    description=m.description,
-                    location=getattr(m, "location", "Remote") or "Remote",
-                    status=JobStatus.Pending,
-                    scraped_date=today,
-                )
-                db.add(db_entry)
-                saved_count += 1
-            else:
-                existing.match_score = m.match_score
-                existing.scraped_date = today
+            if m.match_score >= min_score:
+                saved = save_or_update_matched_job(db=db, job=m, today=today)
+                if saved:
+                    saved_count += 1
 
-        db.commit()
         logger.info("Persisted %d high-match opportunities into database.", saved_count)
 
         # Step 4: Run 7-day retention cleanup
@@ -333,20 +366,25 @@ async def get_current_user_profile(
     "/api/scrape",
     tags=["Job Scraper & Matching"],
 )
+@app.post(
+    "/api/jobs/trigger-scrape",
+    tags=["Job Scraper & Matching"],
+)
 @limiter.limit("10/minute")
 async def trigger_scrape_and_match(
     request: Request,
     db: Session = Depends(get_db),
 ):
     """
-    Triggers the concurrent multi-source job scraper (12 hardcoded primary keywords),
-    evaluates candidates against the user's base resume (data/resume.txt) via ChromaDB RAG,
-    and ONLY saves jobs with match_score >= 65% for today's date.
+    Triggers the concurrent multi-source job scraper across configured TARGET_ROLES,
+    evaluates candidates against candidate resume context via ChromaDB RAG & LLM,
+    and saves jobs with match_score >= MIN_MATCH_SCORE into the Database.
     """
+    min_score = get_min_match_score()
     scraper = JobScraper()
     rag = RAGEngine()
 
-    # 1. Fetch raw candidates
+    # 1. Fetch raw candidates across configured TARGET_ROLES
     scraped_candidates = scraper.scrape_jobs(limit=60, db=db)
     logger.info("Scraper fetched %d candidates adhering to 24h & geo rules.", len(scraped_candidates))
 
@@ -359,34 +397,17 @@ async def trigger_scrape_and_match(
             "message": "No new unique jobs discovered matching 24-hour and geographic filters.",
         }
 
-    # 2. Vector RAG evaluation (Strict cutoff >= 55%)
-    matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=DEFAULT_MATCH_SCORE)
-    logger.info("RAG Engine qualified %d jobs exceeding >=%.1f%% threshold.", len(matched_jobs), DEFAULT_MATCH_SCORE)
+    # 2. Vector RAG & LLM evaluation (Strict cutoff >= MIN_MATCH_SCORE)
+    matched_jobs = rag.match_jobs(scraped_candidates, min_match_score=min_score)
+    logger.info("RAG Engine qualified %d jobs exceeding >=%.1f%% threshold.", len(matched_jobs), min_score)
 
     today = date.today()
     saved_count = 0
     for m in matched_jobs:
-        existing = db.query(Job).filter(Job.link == m.job_link).first()
-        if not existing:
-            new_job = Job(
-                title=m.title,
-                company=m.company,
-                link=m.job_link,
-                career_page_link=m.career_page_link,
-                match_score=m.match_score,
-                recruiter_email=getattr(m, "recruiter_email", None),
-                description=m.description,
-                location=getattr(m, "location", "Remote") or "Remote",
-                status=JobStatus.Pending,
-                scraped_date=today,
-            )
-            db.add(new_job)
-            saved_count += 1
-        else:
-            existing.match_score = m.match_score
-            existing.scraped_date = today
-
-    db.commit()
+        if m.match_score >= min_score:
+            saved = save_or_update_matched_job(db=db, job=m, today=today)
+            if saved:
+                saved_count += 1
 
     return {
         "status": "success",
@@ -394,7 +415,7 @@ async def trigger_scrape_and_match(
         "matched_count": len(matched_jobs),
         "saved_count": saved_count,
         "scraped_date": today.isoformat(),
-        "message": f"Successfully scraped {len(scraped_candidates)} candidates, matched {len(matched_jobs)} (>= {DEFAULT_MATCH_SCORE}%), and saved {saved_count} new jobs for {today}.",
+        "message": f"Successfully scraped {len(scraped_candidates)} candidates, matched {len(matched_jobs)} (>= {min_score}%), and saved {saved_count} qualified jobs for {today}.",
     }
 
 

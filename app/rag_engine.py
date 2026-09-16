@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from pathlib import Path
@@ -18,7 +19,23 @@ logger = logging.getLogger("your_assistant.rag_engine")
 is_vercel = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 DEFAULT_RESUME_PATH = Path("data") / "resume.txt"
 DEFAULT_CHROMA_PATH = "/tmp/chroma_db" if is_vercel else "./chroma_db"
-MIN_MATCH_THRESHOLD = float(os.getenv("MIN_MATCH_SCORE", "55.0"))  # Cutoff (>= 55%) to filter qualified job matches
+
+def get_min_match_score() -> float:
+    """
+    Retrieve minimum match score cutoff percentage from MIN_MATCH_SCORE env var.
+    Safely handles whitespace, quotes, and invalid strings with fallback to 55.0.
+    """
+    raw = os.getenv("MIN_MATCH_SCORE", "55.0")
+    if raw:
+        cleaned = raw.strip().strip('"').strip("'")
+        try:
+            val = float(cleaned)
+            return max(0.0, min(100.0, val))
+        except ValueError:
+            pass
+    return 55.0
+
+MIN_MATCH_THRESHOLD = get_min_match_score()
 
 if is_vercel:
     os.environ.setdefault("FASTEMBED_CACHE_PATH", "/tmp/fastembed_cache")
@@ -143,6 +160,106 @@ def chunk_resume_semantically(resume_text: str) -> List[Dict[str, Any]]:
 
 
 # ==============================================================================
+# AI Job Matching & ATS Evaluation Prompt & Schemas
+# ==============================================================================
+
+AI_JOB_MATCHING_SYSTEM_PROMPT = """You are an AI Job Matching & ATS Evaluation Engine.
+
+Compare the provided Candidate Resume Context with the target Job Description (JD). Calculate a realistic match score from 0 to 100 based on skill overlap, experience, and responsibilities.
+
+CRITICAL INSTRUCTION:
+Output ONLY a valid JSON object. Do not include markdown formatting around JSON (no ```json code blocks), preambles, or postscripts.
+
+JSON Format Required:
+{
+  "match_score": <integer between 0 and 100>,
+  "matching_skills": [<list of matched skills>],
+  "missing_skills": [<list of required skills missing from candidate>],
+  "reasoning": "<brief 2-sentence explanation of the score>"
+}
+"""
+
+
+class JobMatchAnalysis(BaseModel):
+    """Structured ATS match evaluation result."""
+    match_score: int = Field(..., ge=0, le=100, description="Match score from 0 to 100")
+    matching_skills: List[str] = Field(default_factory=list, description="List of matched skills present in both")
+    missing_skills: List[str] = Field(default_factory=list, description="List of required skills missing from candidate")
+    reasoning: str = Field(default="", description="Brief 2-sentence explanation of score")
+    summary: Optional[str] = Field(default=None, description="Summary analysis")
+
+
+def evaluate_job_match_with_llm(
+    job_title: str,
+    job_description: str,
+    candidate_resume_context: str,
+    semantic_vector_score: Optional[float] = None,
+) -> JobMatchAnalysis:
+    """
+    Compare Candidate Resume Context with target Job Description using structured LLM evaluation.
+    Robust JSON parsing with error boundaries so parsing failures NEVER break the pipeline or drop records.
+    """
+    from app.llm_manager import generate_ai_response
+
+    user_prompt = f"""
+### TARGET JOB DESCRIPTION:
+Title: {job_title}
+Description:
+{job_description}
+
+### CANDIDATE RESUME CONTEXT:
+{candidate_resume_context}
+
+Evaluate the match score and return strict JSON now.
+"""
+    try:
+        raw_response = generate_ai_response(
+            prompt=user_prompt.strip(),
+            system_prompt=AI_JOB_MATCHING_SYSTEM_PROMPT,
+        )
+
+        # Robust JSON cleaning: strip any ```json or ``` fences
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(raw_response).strip(), flags=re.MULTILINE).strip()
+        json_match = re.search(r"\{[\s\S]*\}", cleaned)
+        if json_match:
+            data = json.loads(json_match.group(0))
+            score_val = int(round(float(data.get("match_score", 0))))
+            score_val = max(0, min(100, score_val))
+            matching = [str(s) for s in data.get("matching_skills", []) if str(s).strip()]
+            missing = [str(s) for s in data.get("missing_skills", []) if str(s).strip()]
+            reasoning = str(data.get("reasoning") or data.get("summary") or "Evaluated by AI ATS Engine.").strip()
+            summary = str(data.get("summary") or reasoning).strip()
+            return JobMatchAnalysis(
+                match_score=score_val,
+                matching_skills=matching,
+                missing_skills=missing,
+                reasoning=reasoning,
+                summary=summary,
+            )
+    except Exception as exc:
+        logger.warning("LLM job evaluation encountered error or parse failure (%s). Using deterministic fallback.", exc)
+
+    # Deterministic fallback based on semantic vector similarity and technical keyword overlap
+    base_score = int(round(semantic_vector_score)) if semantic_vector_score is not None else 70
+    resume_lower = candidate_resume_context.lower()
+    jd_tokens = set(re.findall(r"\b[A-Za-z0-9+#.-]{3,}\b", f"{job_title} {job_description}"))
+    common_words = {"the", "and", "for", "with", "that", "this", "from", "you", "are", "have", "role", "work", "experience", "looking", "candidate"}
+    tech_candidates = [t for t in jd_tokens if t.lower() not in common_words]
+    matched_skills = [t for t in tech_candidates if t.lower() in resume_lower][:10]
+    missing_skills = [t for t in tech_candidates if t.lower() not in resume_lower][:10]
+
+    fallback_summary = f"Automated evaluation: candidate matched on {len(matched_skills)} core technical requirements."
+
+    return JobMatchAnalysis(
+        match_score=max(0, min(100, base_score)),
+        matching_skills=matched_skills,
+        missing_skills=missing_skills,
+        reasoning=fallback_summary,
+        summary=fallback_summary,
+    )
+
+
+# ==============================================================================
 # Matched Job Schema
 # ==============================================================================
 
@@ -160,8 +277,12 @@ class MatchedJob(BaseModel):
         ...,
         ge=0.0,
         le=100.0,
-        description="Cosine similarity match score percentage against user resume",
+        description="Match score percentage against user resume",
     )
+    matching_skills: List[str] = Field(default_factory=list, description="Skills present in both JD and resume")
+    missing_skills: List[str] = Field(default_factory=list, description="Skills in JD missing from candidate resume")
+    reasoning: Optional[str] = Field(default=None, description="Explanation of match score")
+    summary: Optional[str] = Field(default=None, description="Summary analysis")
 
     @property
     def link(self) -> str:
@@ -303,6 +424,10 @@ class RAGEngine:
 
         return proven_chunks
 
+    def query_resume(self, query: str, n_results: int = 3) -> List[str]:
+        """Retrieve relevant resume context chunks from ChromaDB."""
+        return self.query_proven_context_chunks(query_terms=query, n_results_per_term=n_results)
+
     def get_resume_text(self) -> str:
         """Retrieve cached resume text or load from static file."""
         if self._resume_text is None:
@@ -403,16 +528,29 @@ class RAGEngine:
             score_pct = round(cosine_similarity * 100.0, 2)
             score_pct = max(0.0, min(100.0, score_pct))
 
-            logger.info(
-                "Job Candidate: '%s' (%s) -> Cosine Distance: %.4f, Match Score: %.2f%%",
-                candidate.title,
-                candidate.company,
-                dist,
-                score_pct,
+            # Retrieve candidate resume context from ChromaDB
+            try:
+                context_chunks = self.query_resume(f"{candidate.title}. {candidate.description[:300]}", n_results=4)
+                candidate_context = "\n\n".join(context_chunks) if context_chunks else resume_text
+            except Exception:
+                candidate_context = resume_text
+
+            # LLM-based evaluation with robust JSON parsing & deterministic fallback
+            analysis = evaluate_job_match_with_llm(
+                job_title=candidate.title,
+                job_description=candidate.description,
+                candidate_resume_context=candidate_context,
+                semantic_vector_score=score_pct,
+            )
+            calculated_score = float(analysis.match_score)
+
+            # Log each evaluation per required specification
+            logger.debug(
+                f'[DEBUG] Job: "{candidate.title}" | Calculated Score: {calculated_score:.0f}% | Required Score: {min_match_score:.0f}%'
             )
 
-            # STRICT CUTOFF: Return ONLY jobs with match score >= min_match_score (65%)
-            if score_pct >= min_match_score:
+            # STRICT CUTOFF: Return ONLY jobs with match score >= min_match_score
+            if calculated_score >= min_match_score:
                 matched_jobs.append(
                     MatchedJob(
                         title=candidate.title,
@@ -421,7 +559,11 @@ class RAGEngine:
                         job_link=candidate.job_link,
                         career_page_link=candidate.career_page_link,
                         location=getattr(candidate, "location", "Remote") or "Remote",
-                        match_score=score_pct,
+                        match_score=calculated_score,
+                        matching_skills=analysis.matching_skills,
+                        missing_skills=analysis.missing_skills,
+                        reasoning=analysis.reasoning,
+                        summary=analysis.summary,
                     )
                 )
 
