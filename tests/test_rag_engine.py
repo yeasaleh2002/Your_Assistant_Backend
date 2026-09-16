@@ -117,3 +117,23 @@ def test_cosine_similarity_matching_and_strict_75_threshold(rag_engine):
 def test_empty_candidates_returns_empty(rag_engine):
     """Verify empty input list safely returns empty results."""
     assert rag_engine.match_jobs([]) == []
+
+
+def test_semantic_chunking_and_atomic_retrieval(rag_engine, sample_resume_path):
+    """Verify resume text is parsed into atomic chunks and retrieved strictly."""
+    from app.rag_engine import chunk_resume_semantically
+
+    resume_text = sample_resume_path.read_text(encoding="utf-8")
+    chunks = chunk_resume_semantically(resume_text)
+
+    assert len(chunks) >= 1
+    # Chunks should have metadata with section
+    sections = [c["metadata"]["section"] for c in chunks]
+    assert any(s in ["Professional Summary", "Work Experience", "Technical Skills", "Header"] for s in sections)
+
+    # Embed and retrieve
+    rag_engine.embed_resume()
+    proven = rag_engine.retrieve_proven_context(["FastAPI", "ChromaDB"])
+    assert len(proven) >= 1
+    assert any("FastAPI" in p or "ChromaDB" in p for p in proven)
+

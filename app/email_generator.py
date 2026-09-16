@@ -259,34 +259,33 @@ Return ONLY a valid JSON object formatted exactly as:
         resume_content = base_resume_text or self.load_base_resume()
         company_name = (company or "Hiring Team").strip()
 
-        system_prompt = (
-            "You are an elite technical career advisor and professional cover letter writer. "
-            f"Write a compelling, humanized, 3-4 paragraph technical cover letter for Yeasaleh applying "
-            f"for the role of {job_title} at {company_name}. "
-            "Highlight verified achievements from the resume (e.g. 0.01 CLS, 50k+ user scale, 85% workflow automation, React, Next.js, Node.js, FastAPI). "
-            f"Use the target title '{job_title}' instead of generic 'Software Developer'. "
-            "Write in standard American English, professional, direct, and zero generic clichés."
-        )
+        from app.resume_builder import EXPERT_COVER_LETTER_STRATEGIST_PROMPT
+
+        system_prompt = EXPERT_COVER_LETTER_STRATEGIST_PROMPT
 
         user_prompt = f"""
-TARGET ROLE: {job_title}
-COMPANY: {company_name}
+TARGET ROLE: {job_title} at {company_name}
 
 JOB DESCRIPTION:
 {job_description}
 
-CANDIDATE BASE RESUME:
+CANDIDATE BASE RESUME (GROUND TRUTH):
 {resume_content}
 
-INSTRUCTIONS:
-- Address the hiring manager or technical recruiting team.
-- Emphasize how candidate's specific background aligns with the requirements of {job_title}.
-- Include direct links: Portfolio (https://yeasaleh.xyz), GitHub (https://github.com/yeasaleh2002), and LinkedIn (https://www.linkedin.com/in/yea-saleh).
-- Sign-off as:
-  Sincerely,
-  Yeasaleh
-  {job_title}
-  +8801735782467 | yeasaleh.contact@gmail.com
+CRITICAL INSTRUCTIONS:
+1. ZERO HALLUCINATION: Base all claims strictly on the Candidate Resume. Do not invent enthusiasm or experience for tools the candidate hasn't used.
+2. STRUCTURE:
+   - Paragraph 1: State the exact role applied for ({job_title}) and a strong hook summarizing the candidate's most relevant core competency.
+   - Paragraph 2: Highlight 1-2 specific achievements from the candidate's resume that directly solve the core problems outlined in the Job Description. Use metrics if available.
+   - Paragraph 3: Brief conclusion and professional call to action.
+3. ATS OPTIMIZATION: Seamlessly integrate 3-5 high-value keywords from the Job Description into the narrative.
+4. TONE: Professional, confident, and direct. Avoid overly flowery language or clichés.
+
+Sign-off as:
+Sincerely,
+Yeasaleh
+{job_title}
++8801735782467 | yeasaleh.contact@gmail.com
 """
 
         logger.info("Generating tailored cover letter for '%s' at '%s'...", job_title, company_name)

@@ -13,7 +13,11 @@ from reportlab.pdfbase.pdfmetrics import registerFontFamily  # type: ignore
 from reportlab.pdfbase.ttfonts import TTFont  # type: ignore
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer  # type: ignore
 
+import json
+from pydantic import BaseModel, Field
+
 from app.llm_manager import generate_ai_response
+from app.rag_engine import RAGEngine
 
 logger = logging.getLogger("your_assistant.resume_builder")
 
@@ -111,6 +115,44 @@ STRICT_ATS_PROMPT = (
     "experiences present in the original resume. DO NOT hallucinate or add any fake skills."
 )
 
+FACT_CHECKER_SYSTEM_PROMPT = """You are a Strict ATS Fact-Checking Auditor and Anti-Hallucination Gatekeeper.
+
+Your sole duty is to compare extracted Job Description (JD) keywords and requirements against the Candidate's Verified Context retrieved from ChromaDB.
+
+CRITICAL DIRECTIVES:
+1. ZERO ASSUMPTIONS: If a tool, language, framework, qualification, or metric in the JD is NOT explicitly mentioned or directly proven in the Candidate Context, you MUST classify it under `dropped_keywords`.
+2. NEVER GUESS OR COMPENSATE: If the candidate lacks a skill, do NOT invent or substitute it. It must be explicitly dropped.
+3. OUTPUT FORMAT: Output strictly valid JSON matching:
+{
+  "verified_keywords": ["keyword1", "keyword2"],
+  "dropped_keywords": ["dropped_requirement1", "dropped_requirement2"],
+  "proven_facts": ["proven fact 1", "proven fact 2"]
+}
+"""
+
+EXPERT_RESUME_STRATEGIST_PROMPT = """You are an Expert Resume Writer and ATS Optimization Strategist. Your objective is to craft a highly compelling, professional resume tailored to a specific Job Description (JD), utilizing ONLY the provided Source Context.
+
+As a professional resume writer, you must ensure the language is action-oriented, quantifiable, and impactful, while acting as a strict ATS gatekeeper to prevent any false information.
+
+CRITICAL CONSTRAINTS:
+1. ZERO HALLUCINATION: You must never invent, assume, or add skills, jobs, degrees, or metrics that are not explicitly stated in the Source Context.
+2. NO FAKE SKILLS: If the JD requires a skill or experience the candidate lacks, DO NOT include it or try to compensate for it. Any keywords listed under FORBIDDEN_DROPPED_KEYWORDS must NEVER appear anywhere in the output.
+3. ALIGNMENT & REWRITING: Identify keywords in the JD that naturally match the Source Context. Rewrite the candidate's bullet points to highlight these overlapping areas using the exact terminology from the JD, adhering to the "Action Verb + Task + Impact/Metric" formula (e.g., Accomplished [X], as measured by [Y], by doing [Z]).
+4. FORMATTING: Output the final text using standard ATS headers: "Work Experience", "Education", and "Technical Skills". Do not use columns, tables, or complex formatting.
+"""
+
+EXPERT_COVER_LETTER_STRATEGIST_PROMPT = """You are an Expert Resume Writer and Executive Career Strategist. Write a concise, 3-paragraph cover letter based on the provided Candidate Resume and Job Description.
+
+CRITICAL CONSTRAINTS:
+1. ZERO HALLUCINATION: Base all claims strictly on the Candidate Resume. Do not invent enthusiasm or experience for tools the candidate hasn't used.
+2. STRUCTURE: 
+   - Paragraph 1: State the exact role applied for and a strong hook summarizing the candidate's most relevant core competency.
+   - Paragraph 2: Highlight 1-2 specific achievements from the candidate's resume that directly solve the core problems outlined in the Job Description. Use metrics if available.
+   - Paragraph 3: Brief conclusion and professional call to action.
+3. ATS OPTIMIZATION: Seamlessly integrate 3-5 high-value keywords from the Job Description into the narrative.
+4. TONE: Professional, confident, and direct. Avoid overly flowery language or clichés.
+"""
+
 WORLD_CLASS_ATS_PROMPT = """You are a World-Class ATS Resume Architect, Professional Resume Writer, Technical Recruiter, and ATS Optimization Specialist.
 
 Your job is to analyze, build, rewrite, and optimize resumes to guarantee:
@@ -164,6 +206,22 @@ Before outputting, verify:
 """
 
 
+class FactCheckResult(BaseModel):
+    """Result of Phase 1 LLM Fact-Checking & Anti-Hallucination Gatekeeper."""
+    verified_keywords: List[str] = Field(
+        default_factory=list,
+        description="Keywords from the JD that strictly exist in or are proven by the candidate context."
+    )
+    dropped_keywords: List[str] = Field(
+        default_factory=list,
+        description="Keywords or requirements in the JD that the candidate lacks and MUST NEVER be added."
+    )
+    proven_facts: List[str] = Field(
+        default_factory=list,
+        description="Directly proven achievements, technologies, and metrics from candidate context."
+    )
+
+
 def format_markdown_for_reportlab(text: str) -> str:
     """
     Sanitize text and convert markdown inline markup (**bold**, *italic*)
@@ -197,20 +255,108 @@ class ResumeBuilder:
             raise FileNotFoundError(f"Base resume not found at: {self.base_resume_path}")
         return self.base_resume_path.read_text(encoding="utf-8").strip()
 
+    def validate_and_filter_keywords(
+        self,
+        job_description: str,
+        candidate_context: str,
+        use_llm: bool = False,
+    ) -> FactCheckResult:
+        """
+        Phase 1: Retrieval & Fact-Checking (Anti-Hallucination)
+        1. Extracts candidate technical terms and requirements from the Job Description.
+        2. Retrieves proven candidate context from ChromaDB.
+        3. Cross-examines JD terms against Candidate Context:
+           - ONLY selects keywords that strictly exist in or are directly proven by ChromaDB context.
+           - Explicitly drops any JD requirements the candidate lacks.
+        """
+        raw_terms = re.findall(r"\b[A-Za-z0-9+#.-]{2,}\b", job_description)
+        stop_words = {
+            "the", "and", "with", "for", "that", "this", "from", "you", "will", "our",
+            "are", "have", "experience", "role", "team", "years", "work", "looking",
+            "candidate", "about", "what", "their", "must", "should", "ability",
+        }
+        candidate_terms = [t for t in dict.fromkeys(raw_terms) if t.lower() not in stop_words and len(t) > 2]
+
+        # Retrieve proven atomic chunks from ChromaDB
+        proven_chunks: List[str] = []
+        try:
+            rag = RAGEngine(resume_path=self.base_resume_path)
+            proven_chunks = rag.retrieve_proven_context(candidate_terms[:25])
+        except Exception as exc:
+            logger.debug("ChromaDB chunk retrieval note: %s", exc)
+
+        evidence_text = "\n\n".join(proven_chunks) if proven_chunks else candidate_context
+
+        if use_llm:
+            try:
+                prompt = (
+                    f"### JOB DESCRIPTION:\n{job_description}\n\n"
+                    f"### CANDIDATE CONTEXT (FROM CHROMADB):\n{evidence_text}\n\n"
+                    f"Cross-examine every JD requirement against Candidate Context. Output JSON only."
+                )
+                raw_resp = generate_ai_response(
+                    prompt=prompt,
+                    system_prompt=FACT_CHECKER_SYSTEM_PROMPT,
+                )
+                json_match = re.search(r"\{.*\}", raw_resp, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group(0))
+                    return FactCheckResult(**data)
+            except Exception as exc:
+                logger.warning("LLM fact-checking step failed (%s). Falling back to deterministic filter.", exc)
+
+        # High-precision deterministic lexical verification fallback
+        evidence_lower = evidence_text.lower()
+        verified: List[str] = []
+        dropped: List[str] = []
+
+        for term in candidate_terms:
+            t_lower = term.lower()
+            # Strict word boundary check
+            pattern = rf"\b{re.escape(t_lower)}\b"
+            if re.search(pattern, evidence_lower):
+                verified.append(term)
+            else:
+                dropped.append(term)
+
+        # Extract verified experience facts
+        facts = [
+            line.strip("- ").strip()
+            for line in evidence_text.splitlines()
+            if line.strip().startswith("- ") and any(c.isdigit() for c in line)
+        ]
+
+        return FactCheckResult(
+            verified_keywords=verified[:20],
+            dropped_keywords=dropped[:25],
+            proven_facts=facts[:8],
+        )
+
     def tailor_resume(
         self,
         job_title: str,
         job_description: str,
         company: Optional[str] = None,
         base_resume_text: Optional[str] = None,
+        run_llm_fact_check: bool = False,
     ) -> str:
         """
         Use LLM Manager to rewrite the base resume specifically for a matched job opportunity.
-        Strictly preserves the candidate's resume format, requires at least 4 bullet points per job,
-        and updates the skills section.
+        Enforces Phase 1 Anti-Hallucination Fact-Checking and Phase 2 ATS Optimization:
+        - Weaves in validated keywords naturally without inventing new facts.
+        - Strictly drops unproven JD requirements.
+        - Requires 'Action Verb + Task + Impact/Metric' format with concrete metrics.
+        - Standard ATS headers: Work Experience, Education, Technical Skills.
         """
         resume_content = base_resume_text or self.load_base_resume()
         company_info = f" at {company}" if company else ""
+
+        # Phase 1: Fact-Checking & Anti-Hallucination Gatekeeper
+        fact_check = self.validate_and_filter_keywords(
+            job_description=job_description,
+            candidate_context=resume_content,
+            use_llm=run_llm_fact_check,
+        )
 
         user_prompt = f"""
 TARGET JOB DETAILS:
@@ -218,8 +364,14 @@ TARGET JOB DETAILS:
 - Description & Requirements:
 {job_description}
 
-CANDIDATE BASE RESUME:
+CANDIDATE BASE RESUME (GROUND TRUTH):
 {resume_content}
+
+PHASE 1 VALIDATED KEYWORDS (Strictly proven in Candidate Context - permitted to weave in):
+{", ".join(fact_check.verified_keywords) if fact_check.verified_keywords else "Use candidate verified tools only"}
+
+FORBIDDEN DROPPED REQUIREMENTS (Lacking in candidate context - DO NOT INVENT OR ADD):
+{", ".join(fact_check.dropped_keywords[:20]) if fact_check.dropped_keywords else "None"}
 
 MANDATORY INSTRUCTIONS:
 1. Maintain the EXACT section structure and formatting from the candidate's base resume:
@@ -234,20 +386,25 @@ MANDATORY INSTRUCTIONS:
 2. FOR EACH OF THE 3 PROFESSIONAL ROLES:
    You MUST write AT LEAST 4 bullet points.
    CRITICAL MANDATORY REQUIREMENT FOR ATS SCORING (> 85%):
-   - EVERY SINGLE BULLET POINT MUST CONTAIN CONCRETE QUANTIFIABLE METRICS (percentages %, latency ms, frame rates fps, scale numbers, active user counts, throughput, or time/cost savings) following the Google X-Y-Z formula: "Accomplished [X], as measured by [Y], by doing [Z]".
+   - EVERY SINGLE BULLET POINT MUST follow the "Action Verb + Task + Impact/Metric" formula (Google X-Y-Z formula: "Accomplished [X], as measured by [Y], by doing [Z]").
+   - EVERY SINGLE BULLET POINT MUST CONTAIN CONCRETE QUANTIFIABLE METRICS (percentages %, latency ms, frame rates fps, scale numbers, active user counts, throughput, or time/cost savings).
    - An experience bullet WITHOUT an explicit quantifiable metric (numbers or percentages) is strictly forbidden.
    - Tailor the candidate's verified metrics to directly target the required technologies and domain of the target job description.
 
-3. USA ENGLISH SPELLING & GRAMMAR:
+3. ZERO HALLUCINATION & NO FAKE SKILLS:
+   - You must NEVER invent or assume skills, tools, companies, degrees, or metrics not in the Source Context.
+   - If the JD requires a skill the candidate lacks (listed in FORBIDDEN DROPPED REQUIREMENTS), DO NOT include it or try to compensate for it.
+
+4. USA ENGLISH SPELLING & GRAMMAR:
    - Use standard American English (USA English) spelling exclusively: "optimized", "analyzed", "prioritized", "modeled", "behavior", "catalog", "full-stack", "front-end", "back-end".
    - Current role (Nurix Hive): Active present-tense verbs (Architect, Engineer, Build, Automate, Program, Deploy).
    - Past roles (Manaknight Digital, MedLink Healthcare): Strong past-tense action verbs (Architected, Engineered, Spearheaded, Built, Reduced, Slashed, Accelerated).
    - Zero spelling mistakes, zero typos, and flawless grammar throughout.
 
-4. FOR TECHNICAL SKILLS:
+5. FOR TECHNICAL SKILLS:
    Update and re-order the skills in each category (Front-End, Back-End, AI & Automation Tools) to highlight the technologies most relevant to the target job description.
 
-5. FORMATTING OUTPUT (Standard ATS Markdown):
+6. FORMATTING OUTPUT (Standard ATS Markdown):
    # Yeasaleh | {job_title}
    Dhaka, Bangladesh | +8801735782467 | yeasaleh.contact@gmail.com
    https://www.linkedin.com/in/yea-saleh | https://github.com/yeasaleh2002 | https://yeasaleh.xyz
@@ -256,32 +413,32 @@ MANDATORY INSTRUCTIONS:
    [Tailored 3-4 sentence summary emphasizing background as a {job_title} matching the target role, adhering strictly to USA English]
 
    ## Technical Skills
-   **Front-End:** [Tailored front-end skills matching the job description]
-   **Back-End:** [Tailored back-end skills matching the job description]
-   **AI & Automation Tools:** [Tailored tools & integrations matching the job description]
+   **Front-End:** [Tailored front-end skills matching the job description from candidate context]
+   **Back-End:** [Tailored back-end skills matching the job description from candidate context]
+   **AI & Automation Tools:** [Tailored tools & integrations matching the job description from candidate context]
 
    ## Professional Experience
 
    ### Nurix Hive | Software Engineer
    *Dhaka, Bangladesh (Remote) | August 2025 – Present*
-   - [Tailored bullet point 1 with explicit quantifiable metric % or number]
-   - [Tailored bullet point 2 with explicit quantifiable metric % or number]
-   - [Tailored bullet point 3 with explicit quantifiable metric % or number]
-   - [Tailored bullet point 4 with explicit quantifiable metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
 
    ### Manaknight Digital | Web Developer
    *Toronto, Canada (Remote) | December 2023 – July 2025*
-   - [Tailored bullet point 1 with explicit quantifiable metric % or number]
-   - [Tailored bullet point 2 with explicit quantifiable metric % or number]
-   - [Tailored bullet point 3 with explicit quantifiable metric % or number]
-   - [Tailored bullet point 4 with explicit quantifiable metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
 
    ### MedLink Healthcare Private Limited | Software Engineer
    *Hyderabad, India (Remote) | March 2022 – December 2023*
-   - [Tailored bullet point 1 with explicit quantifiable metric % or number]
-   - [Tailored bullet point 2 with explicit quantifiable metric % or number]
-   - [Tailored bullet point 3 with explicit quantifiable metric % or number]
-   - [Tailored bullet point 4 with explicit quantifiable metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
+   - [Action Verb] + [Task] + [Impact/Metric % or number]
 
    ## Mentorship Experience
 
@@ -302,7 +459,7 @@ CRITICAL CONSTRAINT:
 {STRICT_ATS_PROMPT}
 """
 
-        full_user_prompt = f"{WORLD_CLASS_ATS_PROMPT}\n\n{user_prompt.strip()}"
+        full_user_prompt = f"{EXPERT_RESUME_STRATEGIST_PROMPT}\n\n{WORLD_CLASS_ATS_PROMPT}\n\n{user_prompt.strip()}"
 
         logger.info("Requesting ATS resume tailoring for '%s%s'...", job_title, company_info)
         try:
@@ -322,6 +479,62 @@ CRITICAL CONSTRAINT:
             if not fallback.strip().startswith("# "):
                 fallback = f"# {fallback}"
             return fallback.strip()
+
+    def generate_cover_letter(
+        self,
+        job_title: str,
+        job_description: str,
+        company: Optional[str] = None,
+        base_resume_text: Optional[str] = None,
+    ) -> str:
+        """
+        Generate a concise, 3-paragraph ATS-optimized cover letter based on
+        Candidate Resume and Job Description with zero hallucination.
+        """
+        resume_content = base_resume_text or self.load_base_resume()
+        company_name = (company or "Hiring Team").strip()
+        fact_check = self.validate_and_filter_keywords(job_description, resume_content, use_llm=False)
+
+        user_prompt = f"""
+TARGET ROLE: {job_title} at {company_name}
+
+JOB DESCRIPTION:
+{job_description}
+
+CANDIDATE RESUME (GROUND TRUTH):
+{resume_content}
+
+VALIDATED OVERLAPPING KEYWORDS:
+{", ".join(fact_check.verified_keywords) if fact_check.verified_keywords else "Full-stack web architecture, performance optimization"}
+
+FORBIDDEN DROPPED KEYWORDS (DO NOT USE):
+{", ".join(fact_check.dropped_keywords[:15]) if fact_check.dropped_keywords else "None"}
+
+Write the concise, 3-paragraph cover letter strictly following the structure and zero-hallucination constraints:
+- Paragraph 1: State role applied for and hook summarizing core competency.
+- Paragraph 2: Highlight 1-2 specific achievements solving JD problems with metrics.
+- Paragraph 3: Brief conclusion and professional call to action.
+- Sign-off as Yeasaleh, {job_title}.
+"""
+        logger.info("Generating ATS cover letter for '%s' at '%s'...", job_title, company_name)
+        try:
+            return generate_ai_response(
+                prompt=user_prompt.strip(),
+                system_prompt=EXPERT_COVER_LETTER_STRATEGIST_PROMPT,
+            ).strip()
+        except Exception as exc:
+            logger.warning("Cover letter generation failed (%s), using fallback.", exc)
+            return (
+                f"Dear {company_name} Hiring Team,\n\n"
+                f"I am writing to express my enthusiastic interest in the {job_title} position at {company_name}. "
+                f"With extensive full-stack experience architecting scalable Next.js and Node.js applications, "
+                f"I specialize in engineering high-performance APIs and optimizing user interfaces for mission-critical platforms.\n\n"
+                f"At Nurix Hive and Manaknight Digital, I engineered modular systems that accelerated API response times by 25%, "
+                f"slashed initial page load times by 48%, and automated 85% of repetitive workflows while supporting 50,000+ active users.\n\n"
+                f"I welcome the opportunity to discuss how my technical expertise can solve key engineering challenges at {company_name}. "
+                f"You can explore my technical projects at https://yeasaleh.xyz.\n\n"
+                f"Sincerely,\nYeasaleh\n{job_title}\n+8801735782467 | yeasaleh.contact@gmail.com"
+            )
 
     def generate_pdf(
         self,
@@ -454,11 +667,16 @@ CRITICAL CONSTRAINT:
             # Section Titles: ## Title or recognized exact section name
             is_sec_heading = line.startswith("## ") or line in [
                 "Professional Summary",
+                "Summary",
                 "Technical Skills",
+                "Skills",
                 "Professional Experience",
+                "Work Experience",
+                "Experience",
                 "Mentorship Experience",
                 "Education",
                 "Language",
+                "Languages",
             ]
             if is_sec_heading:
                 seen_first_section = True
@@ -471,7 +689,9 @@ CRITICAL CONSTRAINT:
             is_company_subheading = line.startswith("### ") or (
                 seen_first_section
                 and " | " in line
-                and any(c in line for c in ["Nurix Hive", "Manaknight", "MedLink", "Sadhinota"])
+                and not line.startswith("-")
+                and not line.startswith("*")
+                and not line.startswith("•")
             )
             if is_company_subheading:
                 raw_sub = line[4:].strip() if line.startswith("### ") else line
@@ -511,13 +731,13 @@ CRITICAL CONSTRAINT:
             if line.startswith("- ") or line.startswith("* ") or line.startswith("• "):
                 raw_bullet = line[2:].strip() if (line.startswith("- ") or line.startswith("* ")) else line[1:].strip()
                 bullet_content = format_markdown_for_reportlab(raw_bullet)
-                formatted_bullet = f"&bull;&nbsp; {bullet_content}"
+                formatted_bullet = f"&bull;&nbsp;&nbsp;{bullet_content}"
                 story.append(Paragraph(formatted_bullet, bullet_style))
                 continue
 
             # Regular paragraph text (Summary, Skills lines, Education details, Language)
             para_line = line
-            for skill_cat in ["Front-End:", "Back-End:", "AI & Automation Tools:"]:
+            for skill_cat in ["Front-End:", "Back-End:", "AI & Automation Tools:", "Languages & Frameworks:", "Databases & Tools:"]:
                 if para_line.startswith(skill_cat) and not para_line.startswith(f"**{skill_cat}"):
                     para_line = f"**{skill_cat}** {para_line[len(skill_cat):].strip()}"
                     break
@@ -540,10 +760,20 @@ CRITICAL CONSTRAINT:
     ) -> Dict[str, Any]:
         """
         Orchestrate complete pipeline:
-        1. Tailors resume via LLM with strict anti-hallucination prompt.
-        2. Converts tailored Markdown into professional ATS-friendly PDF.
+        1. Phase 1: Fact-Checking & Anti-Hallucination Gatekeeper.
+        2. Phase 2: ATS-Optimized Markdown Tailoring.
+        3. Phase 3: Machine-Readable Single-Column PDF Generation.
         """
-        # Step 1: Tailor Markdown
+        resume_content = base_resume_text or self.load_base_resume()
+
+        # Step 1: Fact-Checking & Anti-Hallucination Filter
+        fact_check = self.validate_and_filter_keywords(
+            job_description=job_description,
+            candidate_context=resume_content,
+            use_llm=False,
+        )
+
+        # Step 2: Tailor Markdown
         tailored_markdown = self.tailor_resume(
             job_title=job_title,
             job_description=job_description,
@@ -551,7 +781,7 @@ CRITICAL CONSTRAINT:
             base_resume_text=base_resume_text,
         )
 
-        # Step 2: Generate PDF
+        # Step 3: Generate PDF
         clean_title = re.sub(r"[^a-zA-Z0-9]+", "_", job_title or "Engineer").strip("_")
         clean_company = re.sub(r"[^a-zA-Z0-9]+", "_", company).strip("_") if company and company.strip() else ""
         if output_filename:
@@ -583,4 +813,6 @@ CRITICAL CONSTRAINT:
             "tailored_markdown": tailored_markdown,
             "pdf_path": str(generated_path),
             "filename": fname,
+            "verified_keywords": fact_check.verified_keywords,
+            "dropped_keywords": fact_check.dropped_keywords,
         }

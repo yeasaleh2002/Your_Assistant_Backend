@@ -260,4 +260,92 @@ Bangla (Native), English (Professional Working Proficiency)
     assert b"Calibri" in content
 
 
+def test_phase1_fact_checking_drops_unsupported_skills(sample_resume_file):
+    """
+    Verify Phase 1 fact-checking gatekeeper:
+    - Retains skills present in candidate resume (Python, FastAPI, ChromaDB).
+    - Drops unsupported JD requirements (Kubernetes, Rust, Solidity).
+    """
+    builder = ResumeBuilder(base_resume_path=sample_resume_file)
+    jd = (
+        "We are looking for a Senior Engineer with Python, FastAPI, and ChromaDB. "
+        "Must also have 5 years of Kubernetes, Rust, and Solidity smart contract experience."
+    )
+    result = builder.validate_and_filter_keywords(job_description=jd, candidate_context="", use_llm=False)
+
+    verified_lower = [k.lower() for k in result.verified_keywords]
+    dropped_lower = [k.lower() for k in result.dropped_keywords]
+
+    # Proven skills must be in verified
+    assert "python" in verified_lower or "fastapi" in verified_lower or "chromadb" in verified_lower
+    # Absent skills must be explicitly dropped
+    assert "kubernetes" in dropped_lower
+    assert "rust" in dropped_lower
+    assert "solidity" in dropped_lower
+
+
+def test_phase2_cover_letter_zero_hallucination(sample_resume_file):
+    """Verify ATS cover letter generation adheres to prompt constraints."""
+    builder = ResumeBuilder(base_resume_path=sample_resume_file)
+    mock_cl = (
+        "Dear Acme Corp Hiring Team,\n\n"
+        "I am writing to express my enthusiastic interest in the Lead AI Engineer position at Acme Corp. "
+        "With deep expertise in scalable Python and FastAPI architectures, I specialize in low-latency systems.\n\n"
+        "At HiveTech, I scaled ChromaDB vector search to sub-50ms latency and maintained robust microservice workflows.\n\n"
+        "I would welcome the opportunity to discuss how my background can deliver immediate value to Acme Corp.\n\n"
+        "Sincerely,\nYeasaleh\nLead AI Engineer"
+    )
+
+    with patch("app.resume_builder.generate_ai_response", return_value=mock_cl) as mock_gen:
+        letter = builder.generate_cover_letter(
+            job_title="Lead AI Engineer",
+            job_description="Seeking a Python and ChromaDB specialist.",
+            company="Acme Corp",
+        )
+        assert "Lead AI Engineer" in letter
+        assert "ChromaDB" in letter
+        mock_gen.assert_called_once()
+
+
+def test_phase3_machine_readable_single_column_pdf(tmp_path):
+    """
+    Verify Phase 3 PDF generation produces standard single-column machine-readable PDF
+    with standard ATS headers: Work Experience, Education, Technical Skills.
+    """
+    builder = ResumeBuilder()
+    md_content = """# Alex Rivera | Senior AI Engineer
+San Francisco, CA | alex@example.com | https://linkedin.com/in/alex
+
+## Professional Summary
+Senior AI Engineer specializing in low-latency RAG architectures and high-throughput Python backends.
+
+## Technical Skills
+**Front-End:** React.js, TypeScript
+**Back-End:** Python, FastAPI, ChromaDB, PostgreSQL
+**AI & Automation Tools:** Claude, GitHub Copilot
+
+## Work Experience
+
+### HiveTech | Senior AI Engineer
+*San Francisco, CA (Remote) | 2022 – Present*
+- Scaled ChromaDB vector search to sub-50ms latency, handling 10,000+ daily queries.
+- Architected modular microservices in FastAPI, accelerating response times by 35%.
+
+## Education
+B.S. in Computer Science, Stanford University
+"""
+    pdf_dest = tmp_path / "Machine_Readable_ATS.pdf"
+    res = builder.generate_pdf(md_content, pdf_dest)
+
+    assert res.exists()
+    assert res.stat().st_size > 500
+
+    # Ensure valid PDF binary and machine-readable text stream
+    with open(res, "rb") as f:
+        data = f.read()
+    assert data.startswith(b"%PDF-")
+    assert b"%%EOF" in data
+
+
+
 

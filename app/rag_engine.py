@@ -60,6 +60,88 @@ class FastEmbedEmbeddingFunction(EmbeddingFunction):
         return [emb.tolist() for emb in embeddings]
 
 
+def chunk_resume_semantically(resume_text: str) -> List[Dict[str, Any]]:
+    """
+    Splits resume text into atomic, verifiable segments with metadata:
+    - Summary
+    - Technical Skills (sub-categorized by line or group)
+    - Experience roles (each role with its bullet points)
+    - Mentorship & Education
+    """
+    chunks: List[Dict[str, Any]] = []
+    lines = resume_text.splitlines()
+
+    current_section = "Header"
+    current_role = ""
+    current_buffer: List[str] = []
+
+    def flush_buffer(section: str, role: str, buffer: List[str]):
+        text = "\n".join(buffer).strip()
+        if text:
+            chunks.append({
+                "text": text,
+                "metadata": {
+                    "section": section,
+                    "role": role or section,
+                },
+            })
+
+    # Header pattern matchers
+    section_patterns = [
+        ("Professional Summary", re.compile(r"^(##\s*)?(Professional\s+Summary|Summary)\b", re.IGNORECASE)),
+        ("Technical Skills", re.compile(r"^(##\s*)?(Technical\s+Skills|Skills)\b", re.IGNORECASE)),
+        ("Work Experience", re.compile(r"^(##\s*)?(Professional\s+Experience|Work\s+Experience|Experience)\b", re.IGNORECASE)),
+        ("Mentorship Experience", re.compile(r"^(##\s*)?(Mentorship\s+Experience|Mentorship)\b", re.IGNORECASE)),
+        ("Education", re.compile(r"^(##\s*)?(Education)\b", re.IGNORECASE)),
+        ("Language", re.compile(r"^(##\s*)?(Language|Languages)\b", re.IGNORECASE)),
+    ]
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Check if line matches a major section
+        matched_section = None
+        for sec_name, pattern in section_patterns:
+            if pattern.match(stripped):
+                matched_section = sec_name
+                break
+
+        if matched_section:
+            flush_buffer(current_section, current_role, current_buffer)
+            current_section = matched_section
+            current_role = ""
+            current_buffer = [stripped]
+            continue
+
+        # Check for role headers inside Experience sections (e.g., "Nurix Hive | Software Engineer" or "### Company | Role")
+        is_role_header = (
+            current_section in ("Work Experience", "Mentorship Experience")
+            and (
+                stripped.startswith("### ")
+                or ("|" in stripped and any(yr in stripped for yr in ["2020", "2021", "2022", "2023", "2024", "2025", "Present"]))
+            )
+        )
+
+        if is_role_header:
+            flush_buffer(current_section, current_role, current_buffer)
+            current_role = stripped.replace("###", "").strip()
+            current_buffer = [stripped]
+            continue
+
+        # For Technical Skills: each skill category line (Front-End:, Back-End:, etc.) can be its own chunk
+        if current_section == "Technical Skills" and (":" in stripped or stripped.startswith("- ")):
+            flush_buffer(current_section, current_role, current_buffer)
+            current_buffer = [stripped]
+            continue
+
+        current_buffer.append(stripped)
+
+    flush_buffer(current_section, current_role, current_buffer)
+    return chunks
+
+
 # ==============================================================================
 # Matched Job Schema
 # ==============================================================================
@@ -91,6 +173,7 @@ class RAGEngine:
     Local RAG Engine using ChromaDB and FastEmbed embeddings.
     Embeds the user's base resume and performs cosine similarity matching on
     scraped job postings, strictly returning candidates with match score > 75%.
+    Supports granular atomic chunk retrieval for zero-hallucination ATS resume generation.
     """
 
     def __init__(
@@ -113,9 +196,14 @@ class RAGEngine:
         self._init_resume_collection()
 
     def _init_resume_collection(self) -> None:
-        """Initialize or retrieve the resume profile vector collection."""
+        """Initialize or retrieve the resume profile vector collections."""
         self.resume_collection = self.client.get_or_create_collection(
             name="user_resume_profile",
+            embedding_function=self.embedding_function,
+            metadata={"hnsw:space": "cosine"},
+        )
+        self.resume_chunks_collection = self.client.get_or_create_collection(
+            name="user_resume_atomic_chunks",
             embedding_function=self.embedding_function,
             metadata={"hnsw:space": "cosine"},
         )
@@ -137,18 +225,83 @@ class RAGEngine:
 
     def embed_resume(self, path: Optional[Union[str, Path]] = None) -> str:
         """
-        Read and embed the user's base resume into ChromaDB.
+        Read and embed the user's base resume (both as whole document and atomic chunks) into ChromaDB.
         """
         resume_content = self.load_resume(path)
         logger.info("Embedding base resume (%d characters) into ChromaDB...", len(resume_content))
 
-        # Store in ChromaDB collection
+        # Store in whole-resume collection
         self.resume_collection.upsert(
             documents=[resume_content],
             metadatas=[{"source": str(path or self.resume_path)}],
             ids=["base_resume"],
         )
+
+        # Also chunk semantically and store atomic chunks for zero-hallucination retrieval
+        chunks = chunk_resume_semantically(resume_content)
+        if chunks:
+            chunk_docs = [c["text"] for c in chunks]
+            chunk_metas = [c["metadata"] for c in chunks]
+            chunk_ids = [f"resume_chunk_{i}" for i in range(len(chunks))]
+            self.resume_chunks_collection.upsert(
+                documents=chunk_docs,
+                metadatas=chunk_metas,
+                ids=chunk_ids,
+            )
+            logger.info("Indexed %d atomic resume chunks into ChromaDB.", len(chunks))
+
         return resume_content
+
+    def retrieve_proven_context(
+        self,
+        query_terms: Union[str, Sequence[str]],
+        n_results_per_term: int = 3,
+        max_distance: float = 0.55,
+    ) -> List[str]:
+        """
+        Strict retrieval step from ChromaDB:
+        Queries atomic resume chunks using extracted JD terms or requirements.
+        ONLY returns context chunks whose cosine distance <= max_distance (similarity >= 45%).
+        Drops low-confidence semantic matches to eliminate hallucinated context.
+        """
+        if isinstance(query_terms, str):
+            terms = [query_terms]
+        else:
+            terms = list(query_terms)
+
+        terms = [t.strip() for t in terms if t and len(t.strip()) > 1]
+        if not terms:
+            return []
+
+        # Ensure chunks are indexed
+        existing_chunks = self.resume_chunks_collection.get(limit=1)
+        if not existing_chunks or not existing_chunks.get("ids"):
+            self.embed_resume()
+
+        proven_chunks: List[str] = []
+        seen: set[str] = set()
+
+        for term in terms:
+            try:
+                results = self.resume_chunks_collection.query(
+                    query_texts=[term],
+                    n_results=min(n_results_per_term, 5),
+                    include=["documents", "distances"],
+                )
+                docs_list = results.get("documents", [[]])
+                dists_list = results.get("distances", [[]])
+
+                if docs_list and dists_list:
+                    docs = docs_list[0]
+                    dists = dists_list[0]
+                    for doc, dist in zip(docs, dists):
+                        if dist <= max_distance and doc not in seen:
+                            seen.add(doc)
+                            proven_chunks.append(doc)
+            except Exception as exc:
+                logger.warning("Error querying atomic chunk for term '%s': %s", term, exc)
+
+        return proven_chunks
 
     def get_resume_text(self) -> str:
         """Retrieve cached resume text or load from static file."""
